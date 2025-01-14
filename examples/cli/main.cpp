@@ -2,6 +2,11 @@
 #include <string.h>
 #include <time.h>
 #include <iostream>
+#if __linux__
+#include <unistd.h> // RB: getcwd
+#else
+#include <direct.h>
+#endif
 #include <random>
 #include <string>
 #include <vector>
@@ -784,6 +789,19 @@ int main(int argc, const char* argv[]) {
         print_params(params);
         printf("%s", sd_get_system_info());
     }
+
+    // RB begin
+    char cwd[1024];
+#if __linux__
+    if (getcwd(cwd, sizeof(cwd)) != NULL) {
+#else
+    if (_getcwd(cwd, sizeof(cwd)) != NULL) {
+#endif
+        printf("Current working directory: %s\n", cwd);
+    } else {
+        perror("getcwd() error");
+    }
+    // RB end
 
     if (params.mode == CONVERT) {
         bool success = convert(params.model_path.c_str(), params.vae_path.c_str(), params.output_path.c_str(), params.wtype);
