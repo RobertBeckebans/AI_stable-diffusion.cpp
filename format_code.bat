@@ -10,6 +10,11 @@ if not exist "%GIT_BASH%" (
     exit /b 1
 )
 
+:: Make sure if / else statements are wrapped with braces
+astyle.exe -v --formatted --options=astyle-header.ini --exclude="ggml/src/ggml-impl.h" --recursive *.h
+astyle.exe -v --formatted --options=astyle-cpp.ini --exclude="ggml/src/ggml-cpu/ggml-cpu.c" --recursive *.c
+astyle.exe -v --formatted --options=astyle-cpp.ini --recursive *.cpp
+
 :: Run the shell script using Git Bash
 echo Running clang-format via format_code.sh...
 "%GIT_BASH%" -c "./format_code.sh"
@@ -18,10 +23,6 @@ if %ERRORLEVEL% neq 0 (
     echo ERROR: format_code failed to execute.
     exit /b 1
 )
-
-astyle.exe -v --formatted --options=astyle-header.ini --exclude="ggml/src/ggml-impl.h" **.h
-astyle.exe -v --formatted --options=astyle-cpp.ini --exclude="ggml/src/ggml-cpu/ggml-cpu.c" **.c
-astyle.exe -v --formatted --options=astyle-cpp.ini **.cpp
 
 echo Done!
 endlocal
