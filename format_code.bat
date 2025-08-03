@@ -19,8 +19,8 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 
-astyle.exe -v --formatted --options=astyle-header.ini **.h
-astyle.exe -v --formatted --options=astyle-cpp.ini **.c
+astyle.exe -v --formatted --options=astyle-header.ini --exclude="ggml/src/ggml-impl.h" **.h
+astyle.exe -v --formatted --options=astyle-cpp.ini --exclude="ggml/src/ggml-cpu/ggml-cpu.c" **.c
 astyle.exe -v --formatted --options=astyle-cpp.ini **.cpp
 
 echo Done!
