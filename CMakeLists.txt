@@ -33,6 +33,7 @@ option(SD_SYCL                       "sd: sycl backend" OFF)
 option(SD_MUSA                       "sd: musa backend" OFF)
 option(SD_FAST_SOFTMAX               "sd: x1.5 faster softmax, indeterministic (sometimes, same seed don't generate same image), cuda only" OFF)
 option(SD_BUILD_SHARED_LIBS          "sd: build shared libs" OFF)
+option(SD_BUILD_SHARED_GGML_LIB      "sd: build ggml as a separate shared lib" OFF)
 option(SD_USE_SYSTEM_GGML            "sd: use system-installed GGML library" OFF)
 #option(SD_BUILD_SERVER               "sd: build server example"                           ON)
 
@@ -86,18 +87,53 @@ file(GLOB SD_LIB_SOURCES
     "*.hpp"
 )
 
-# we can get only one share lib
+find_program(GIT_EXE NAMES git git.exe NO_CMAKE_FIND_ROOT_PATH)
+if(GIT_EXE)
+    execute_process(COMMAND ${GIT_EXE} describe --tags --abbrev=7 --dirty=+
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE SDCPP_BUILD_VERSION
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    execute_process(COMMAND ${GIT_EXE} rev-parse --short HEAD
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE SDCPP_BUILD_COMMIT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+endif()
+
+if(NOT SDCPP_BUILD_VERSION)
+    set(SDCPP_BUILD_VERSION unknown)
+endif()
+message(STATUS "stable-diffusion.cpp version ${SDCPP_BUILD_VERSION}")
+
+if(NOT SDCPP_BUILD_COMMIT)
+    set(SDCPP_BUILD_COMMIT unknown)
+endif()
+message(STATUS "stable-diffusion.cpp commit ${SDCPP_BUILD_COMMIT}")
+
+set_property(
+  SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/version.cpp
+  APPEND PROPERTY COMPILE_DEFINITIONS
+  SDCPP_BUILD_COMMIT=${SDCPP_BUILD_COMMIT} SDCPP_BUILD_VERSION=${SDCPP_BUILD_VERSION}
+)
+
 if(SD_BUILD_SHARED_LIBS)
     message("-- Build shared library")
     message(${SD_LIB_SOURCES})
-    set(BUILD_SHARED_LIBS OFF)
+    if(NOT SD_BUILD_SHARED_GGML_LIB)
+        set(BUILD_SHARED_LIBS OFF)
+    endif()
     add_library(${SD_LIB} SHARED ${SD_LIB_SOURCES})
     add_definitions(-DSD_BUILD_SHARED_LIB)
     target_compile_definitions(${SD_LIB} PRIVATE -DSD_BUILD_DLL)
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 else()
     message("-- Build static library")
-    set(BUILD_SHARED_LIBS OFF)
+    if(NOT SD_BUILD_SHARED_GGML_LIB)
+        set(BUILD_SHARED_LIBS OFF)
+    endif()
     add_library(${SD_LIB} STATIC ${SD_LIB_SOURCES})
 endif()
 
@@ -142,10 +178,14 @@ add_subdirectory(thirdparty)
 
 target_link_libraries(${SD_LIB} PUBLIC ggml zip)
 target_include_directories(${SD_LIB} PUBLIC . thirdparty)
-target_compile_features(${SD_LIB} PUBLIC cxx_std_11)
+target_compile_features(${SD_LIB} PUBLIC c_std_11 cxx_std_17)
 
 
 if (SD_BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
+set(SD_PUBLIC_HEADERS stable-diffusion.h)
+set_target_properties(${SD_LIB} PROPERTIES PUBLIC_HEADER "${SD_PUBLIC_HEADERS}")
+
+install(TARGETS ${SD_LIB} LIBRARY PUBLIC_HEADER)
