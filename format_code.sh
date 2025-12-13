@@ -72,15 +72,12 @@ cp .clang-format-cpp .clang-format
 find . -regex ".*\.\(c\|cpp\)" \
 	! -path "./libs/*" \
 	! -path "./extern/*" \
-	! -path "./d3xp/gamesys/SysCvar.cpp" \
-	! -path "./d3xp/gamesys/Callbacks.cpp" \
-	! -path "./sys/win32/win_cpu.cpp" \
-	! -path "./sys/win32/win_main.cpp" \
 	-print0 | xargs -0 -P 16 "$CLANGFMT_BIN" -i
 
 rm .clang-format
 
-# Post-process files to align method names right (requires Python)
+# Post-process files for ( void ), (void) -> () (requires Python)
+# This might break some C code so outcommented this if you run into problems
 if command -v python >/dev/null 2>&1; then
     python format_slimvoids.py
     echo "Void post-processing completed!"
