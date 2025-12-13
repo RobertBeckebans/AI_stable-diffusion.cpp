@@ -10,6 +10,8 @@
 #include <unistd.h> // RB: getcwd
 #else
 #include <direct.h>
+#define NOMINMAX
+#include <windows.h>
 #endif
 #include <random>
 #include <regex>
@@ -334,6 +336,14 @@ void sd_log_cb(enum sd_log_level_t level, const char* log, void* data) {
     }
     fputs(log, out_stream);
     fflush(out_stream);
+
+
+#ifdef _WIN32
+    /* Visual Studio Debug Output */
+    char debug_buf[2048];
+    snprintf(debug_buf, sizeof(debug_buf), "[%-5s] %s", level_str, log);
+    OutputDebugStringA(debug_buf);
+#endif
 }
 
 bool load_images_from_dir(const std::string dir,
