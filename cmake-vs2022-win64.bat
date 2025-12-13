@@ -1,6 +1,11 @@
-REM cd ..
-del /s /q build
+@echo off
+rmdir /s /q build
 mkdir build
-cd build
-cmake -G "Visual Studio 17 2022" -A x64 -DSD_VULKAN=ON ..
+
+cmake -B build ^
+	-G "Visual Studio 17 2022" -A x64 ^
+	-DSD_VULKAN=ON ^
+	-SD_HIPBLAS=ON ^
+	.
+
 pause
