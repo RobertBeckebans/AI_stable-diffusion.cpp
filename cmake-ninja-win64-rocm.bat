@@ -16,7 +16,7 @@ cmake -B build ^
   -G "Ninja Multi-Config" ^
   -DCMAKE_C_COMPILER="%ROCM_BIN%\clang.exe" ^
   -DCMAKE_CXX_COMPILER="%ROCM_BIN%\clang++.exe" ^
-  -DSD_VULKAN=ON ^
+  -DSD_VULKAN=OFF ^
   -DSD_HIPBLAS=ON ^
   -DAMDGPU_TARGETS=gfx1201 ^
   -Dhipblas_DIR="%ROCM_ROOT%\lib\cmake\hipblas" ^
