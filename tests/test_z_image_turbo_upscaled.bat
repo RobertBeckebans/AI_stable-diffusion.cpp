@@ -1,5 +1,8 @@
 set ROCM_ROOT=C:\Program Files\AMD\ROCm\6.4
 set PATH=%ROCM_ROOT%\bin;%PATH%
+for /f %%i in ('wmic os get LocalDateTime ^| find "."') do set DT=%%i
+set TODAY=%DT:~0,8%
+set OUTDIR=output/%TODAY%
 cd ..
 .\bin\sd-cli.exe ^
   --diffusion-model models\diffusion_models\z_image_turbo-Q4_K.gguf ^
@@ -14,6 +17,6 @@ cd ..
   --offload-to-cpu --diffusion-fa ^
   -H 1024 -W 1024 ^
   --vae-tiling --vae-tile-size 32 --vae-tile-overlap 0.5 ^
-  -o output/latina_harbor_upscaled.png
+  -o %OUTDIR%/latina_harbor_upscaled.png
   
 pause

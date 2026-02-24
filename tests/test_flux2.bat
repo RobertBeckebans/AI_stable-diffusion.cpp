@@ -1,5 +1,8 @@
 set ROCM_ROOT=C:\Program Files\AMD\ROCm\6.4
 set PATH=%ROCM_ROOT%\bin;%PATH%
+for /f %%i in ('wmic os get LocalDateTime ^| find "."') do set DT=%%i
+set TODAY=%DT:~0,8%
+set OUTDIR=output/%TODAY%
 cd ..
 .\bin\sd-cli.exe ^
   --diffusion-model models\diffusion_models\flux2-dev-Q4_K_S.gguf ^
@@ -13,6 +16,6 @@ cd ..
   --offload-to-cpu --diffusion-fa --clip-on-cpu ^
   -H 1024 -W 1024 ^
   --vae-tiling --vae-tile-size 32 --vae-tile-overlap 0.5 ^
-  -o output/fashion_brutalist_flux2.png
-  
+  -o %OUTDIR%/fashion_brutalist_flux2.png
+
 pause

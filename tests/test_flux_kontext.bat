@@ -1,5 +1,8 @@
 set ROCM_ROOT=C:\Program Files\AMD\ROCm\6.4
 set PATH=%ROCM_ROOT%\bin;%PATH%
+for /f %%i in ('wmic os get LocalDateTime ^| find "."') do set DT=%%i
+set TODAY=%DT:~0,8%
+set OUTDIR=output/%TODAY%
 cd ..
 .\bin\sd-cli.exe ^
   --diffusion-model models\diffusion_models\flux1-kontext-dev-Q4_K_M.gguf ^
@@ -11,6 +14,6 @@ cd ..
   -v ^
   --clip-on-cpu ^
   -r input/flux1-dev-q8_0.png ^
-  -o output/flux_kontext.png
+  -o %OUTDIR%/flux_kontext_edit.png
   
 pause
