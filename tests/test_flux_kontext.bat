@@ -6,7 +6,7 @@ cd ..
   --clip_l models\text_encoders\flux-clip_l.safetensors ^
   --t5xxl models\text_encoders\flux-t5xxl_fp8_e4m3fn.safetensors ^
   --vae models\vae\flux-vae.safetensors ^
-  -p "change 'flux.cpp' to 'kontext.cpp'" ^
+  -p "change 'flux.cpp' to 'kontext.cpp' and change the cat to a dog" ^
   --cfg-scale 1.0 ^
   -v ^
   --clip-on-cpu ^
