@@ -292,14 +292,6 @@ std::string get_image_params(const SDCliParams& cli_params, const SDContextParam
 void sd_log_cb(enum sd_log_level_t level, const char* log, void* data) {
     SDCliParams* cli_params = (SDCliParams*)data;
     log_print(level, log, cli_params->verbose, cli_params->color);
-
-
-#ifdef _WIN32
-    /* Visual Studio Debug Output */
-    char debug_buf[2048];
-    snprintf(debug_buf, sizeof(debug_buf), "[%-5s] %s", level_str, log);
-    OutputDebugStringA(debug_buf);
-#endif
 }
 
 bool load_images_from_dir(const std::string dir,

@@ -171,6 +171,14 @@ static void log_print(enum sd_log_level_t level, const char* log, bool verbose, 
     } else {
         fprintf(out_stream, "[%-5s] ", level_str);
     }
+
+#ifdef _WIN32
+    /* Visual Studio Debug Output */
+    char debug_buf[2048];
+    snprintf(debug_buf, sizeof(debug_buf), "[%-5s] %s", level_str, log);
+    OutputDebugStringA(debug_buf);
+#endif
+
     print_utf8(out_stream, log);
     fflush(out_stream);
 }
