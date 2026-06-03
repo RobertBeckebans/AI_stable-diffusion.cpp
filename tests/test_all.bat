@@ -49,6 +49,36 @@ cd ..
   -r input/flux1-dev-q8_0.png ^
   -o %OUTDIR%/flux_kontext_edit.png
 
+:: Flux 2 - Klein 4b
+.\bin\sd-cli.exe ^
+  --diffusion-model models\diffusion_models\flux2-klein-4b-Q8_0.gguf ^
+  --vae models\vae\flux2-vae.safetensors ^
+  --llm models\text_encoders\Qwen3-4B-IQ4_XS.gguf ^
+  -p "Latina female with thick wavy hair, harbor boats and pastel houses behind. Breezy seaside light, warm tones, cinematic close-up." ^
+  -n "people, text, signature, watermark, bright colors, cartoon, realistic photo, smooth plastic, clean metal, cute, blurry, visible seams" ^
+  --cfg-scale 1.0 ^
+  --steps 4 ^
+  --seed 618168558929314 ^
+  -v ^
+  -H 1024 -W 1024 ^
+  --offload-to-cpu --diffusion-fa --clip-on-cpu ^
+  -o %OUTDIR%/flux2_klein_4b_latina_harbor.png
+
+:: Flux 2 - Klein 9b
+.\bin\sd-cli.exe ^
+  --diffusion-model models\diffusion_models\flux2-klein-9b-Q8_0.gguf ^
+  --vae models\vae\flux2-vae.safetensors ^
+  --llm models\text_encoders\Qwen3-8B-IQ4_XS.gguf ^
+  -p "Latina female with thick wavy hair, harbor boats and pastel houses behind. Breezy seaside light, warm tones, cinematic close-up." ^
+  -n "people, text, signature, watermark, bright colors, cartoon, realistic photo, smooth plastic, clean metal, cute, blurry, visible seams" ^
+  --cfg-scale 1.0 ^
+  --steps 4 ^
+  --seed 618168558929314 ^
+  -v ^
+  -H 1024 -W 1024 ^
+  --offload-to-cpu --diffusion-fa --clip-on-cpu ^
+  -o %OUTDIR%/flux2_klein9b_latina_harbor.png
+
 :: Flux 2
 .\bin\sd-cli.exe ^
   --diffusion-model models\diffusion_models\flux2-dev-Q4_K_S.gguf ^
