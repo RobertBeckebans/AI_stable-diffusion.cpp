@@ -15,26 +15,20 @@ API and command-line option may change frequently.***
 
 ## 🔥Important News
 
+* **2026/08/04** 🚀 stable-diffusion.cpp adds **Day-1 support for MiniMax-H3**
+* **2026/06/25** 🚀 stable-diffusion.cpp now supports **Krea2**
+* **2026/06/04** 🚀 stable-diffusion.cpp now supports **Ideogram4**
+* **2026/05/31** 🚀 stable-diffusion.cpp now supports **PiD**
+* **2026/05/27** 🚀 stable-diffusion.cpp now supports **Lens**
+* **2026/05/17** 🚀 stable-diffusion.cpp now supports **LTX-2.3**
+* **2026/04/11** 🚀 stable-diffusion.cpp now uses a brand-new embedded web UI.  
 * **2026/01/18** 🚀 stable-diffusion.cpp now supports **FLUX.2-klein**  
-  👉 Details: [PR #1193](https://github.com/leejet/stable-diffusion.cpp/pull/1193)
-
 * **2025/12/01** 🚀 stable-diffusion.cpp now supports **Z-Image**  
-  👉 Details: [PR #1020](https://github.com/leejet/stable-diffusion.cpp/pull/1020)
-
 * **2025/11/30** 🚀 stable-diffusion.cpp now supports **FLUX.2-dev**  
-  👉 Details: [PR #1016](https://github.com/leejet/stable-diffusion.cpp/pull/1016)
-
 * **2025/10/13** 🚀 stable-diffusion.cpp now supports **Qwen-Image-Edit / Qwen-Image-Edit 2509**  
-  👉 Details: [PR #877](https://github.com/leejet/stable-diffusion.cpp/pull/877)
-
 * **2025/10/12** 🚀 stable-diffusion.cpp now supports **Qwen-Image**  
-  👉 Details: [PR #851](https://github.com/leejet/stable-diffusion.cpp/pull/851)
-
 * **2025/09/14** 🚀 stable-diffusion.cpp now supports **Wan2.1 Vace**  
-  👉 Details: [PR #819](https://github.com/leejet/stable-diffusion.cpp/pull/819)
-
 * **2025/09/06** 🚀 stable-diffusion.cpp now supports **Wan2.1 / Wan2.2**  
-  👉 Details: [PR #778](https://github.com/leejet/stable-diffusion.cpp/pull/778)
 
 ## Features
 
@@ -42,28 +36,49 @@ API and command-line option may change frequently.***
 - Super lightweight and without external dependencies
 - Supported models
   - Image Models
-    - SD1.x, SD2.x, [SD-Turbo](https://huggingface.co/stabilityai/sd-turbo)
-    - SDXL, [SDXL-Turbo](https://huggingface.co/stabilityai/sdxl-turbo)
+    - [SD1.x, SD2.x, SD-Turbo](./docs/sd.md)
+    - [SDXL, SDXL-Turbo](./docs/sd.md)
     - [Some SD1.x and SDXL distilled models](./docs/distilled_sd.md)
     - [SD3/SD3.5](./docs/sd3.md)
     - [FLUX.1-dev/FLUX.1-schnell](./docs/flux.md)
     - [FLUX.2-dev/FLUX.2-klein](./docs/flux2.md)
+    - [Lens](./docs/lens.md)
     - [Chroma](./docs/chroma.md)
     - [Chroma1-Radiance](./docs/chroma_radiance.md)
     - [Qwen Image](./docs/qwen_image.md)
+    - [PiD](./docs/pid.md)
+    - [LongCat Image](./docs/longcat_image.md)
     - [Z-Image](./docs/z_image.md)
+    - [MiniT2I](./docs/minit2i.md)
     - [Ovis-Image](./docs/ovis_image.md)
-  - Image Edit Models
+    - [Anima](./docs/anima.md)
+    - [ERNIE-Image](./docs/ernie_image.md)
+    - [Boogu Image](./docs/boogu_image.md)
+    - [Krea2](./docs/krea2.md)
+    - [Mage-Flow](./docs/mage_flow.md)
+    - [SeFi-Image](./docs/sefi_image.md)
+    - [HiDream-O1-Image](./docs/hidream_o1_image.md)
+    - [Ideogram4](./docs/ideogram4.md)
+  - [Image Edit Models](./docs/edit.md)
     - [FLUX.1-Kontext-dev](./docs/kontext.md)
     - [Qwen Image Edit series](./docs/qwen_image_edit.md)
+    - [LongCat Image Edit](./docs/longcat_image.md)
+    - [Boogu Image Edit](./docs/boogu_image.md)
+    - [Mage-Flow-Edit](./docs/mage_flow.md#image-editing)
   - Video Models
     - [Wan2.1/Wan2.2](./docs/wan.md)
-  - [PhotoMaker](https://github.com/TencentARC/PhotoMaker) support.
+    - [MiniMax-H3](./docs/minimax_h3.md)
+    - [LTX-2.3](./docs/ltx2.md)
+    - [HunyuanVideo 1.5](./docs/hunyuan_video.md)
+    - [LingBot-Video](./docs/lingbot_video.md)
+  - [PhotoMaker](./docs/photo_maker.md) support.
+  - [IP-Adapter](./docs/ip_adapter.md) support (SD 1.5 and SDXL, including Plus)
   - Control Net support with SD 1.5
+  - [ADetailer](./docs/adetailer.md)
   - LoRA support, same as [stable-diffusion-webui](https://github.com/AUTOMATIC1111/stable-diffusion-webui/wiki/Features#lora)
   - Latent Consistency Models support (LCM/LCM-LoRA)
-  - Faster and memory efficient latent decoding with [TAESD](https://github.com/madebyollin/taesd)
-  - Upscale images generated with [ESRGAN](https://github.com/xinntao/Real-ESRGAN)
+  - Faster and memory efficient latent decoding with [TAESD](./docs/taesd.md)
+  - Upscale images generated with [ESRGAN](./docs/esrgan.md)
 - Supported backends
   - CPU (AVX, AVX2 and AVX512 support for x86 architectures)
   - CUDA
@@ -72,9 +87,10 @@ API and command-line option may change frequently.***
   - OpenCL
   - SYCL
 - Supported weight formats
-  - Pytorch checkpoint (`.ckpt` or `.pth`)
+  - Pytorch checkpoint (`.ckpt` or `.pth` or `.pt`)
   - Safetensors (`.safetensors`)
   - GGUF (`.gguf`)
+- Convert mode supports converting model weights to `.gguf` or `.safetensors`
 - Supported platforms
     - Linux
     - Mac OS
@@ -92,6 +108,7 @@ API and command-line option may change frequently.***
     - `DPM++ 2M`
     - [`DPM++ 2M v2`](https://github.com/AUTOMATIC1111/stable-diffusion-webui/discussions/8457)
     - `DPM++ 2S a`
+    - `ER-SDE`
     - [`LCM`](https://github.com/AUTOMATIC1111/stable-diffusion-webui/issues/13952)
 - Cross-platform reproducibility
     - `--rng cuda`, default, consistent with the `stable-diffusion-webui GPU RNG`
@@ -111,7 +128,7 @@ API and command-line option may change frequently.***
     - Stable Diffusion v1.5 from https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5 
 
     ```sh
-    curl -L -O https://huggingface.co/runwayml/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors
+    curl -L -O https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors
     ```
 
 ### Generate an image with just one command
@@ -125,27 +142,17 @@ API and command-line option may change frequently.***
 ## Performance
 
 If you want to improve performance or reduce VRAM/RAM usage, please refer to [performance guide](./docs/performance.md).
+For runtime and parameter backend placement, see the [backend selection guide](./docs/backend.md).
 
 ## More Guides
 
-- [SD1.x/SD2.x/SDXL](./docs/sd.md)
-- [SD3/SD3.5](./docs/sd3.md)
-- [FLUX.1-dev/FLUX.1-schnell](./docs/flux.md)
-- [FLUX.2-dev/FLUX.2-klein](./docs/flux2.md)
-- [FLUX.1-Kontext-dev](./docs/kontext.md)
-- [Chroma](./docs/chroma.md)
-- [🔥Qwen Image](./docs/qwen_image.md)
-- [🔥Qwen Image Edit series](./docs/qwen_image_edit.md)
-- [🔥Wan2.1/Wan2.2](./docs/wan.md)
-- [🔥Z-Image](./docs/z_image.md)
-- [Ovis-Image](./docs/ovis_image.md)
+- [Backend selection](./docs/backend.md)
+- [RPC](./docs/rpc.md)
 - [LoRA](./docs/lora.md)
 - [LCM/LCM-LoRA](./docs/lcm.md)
-- [Using PhotoMaker to personalize image generation](./docs/photo_maker.md)
-- [Using ESRGAN to upscale results](./docs/esrgan.md)
-- [Using TAESD to faster decoding](./docs/taesd.md)
 - [Docker](./docs/docker.md)
 - [Quantization and GGUF](./docs/quantization_and_gguf.md)
+- [INT8 convrot safetensors](./docs/int8_convrot.md)
 - [Inference acceleration via caching](./docs/caching.md)
 
 ## Bindings
@@ -154,6 +161,7 @@ These projects wrap `stable-diffusion.cpp` for easier use in other languages/fra
 
 * Golang (non-cgo): [seasonjs/stable-diffusion](https://github.com/seasonjs/stable-diffusion)
 * Golang (cgo): [Binozo/GoStableDiffusion](https://github.com/Binozo/GoStableDiffusion)
+* Golang (non-cgo): [l8bloom/gosd](https://github.com/l8bloom/gosd)
 * C#: [DarthAffe/StableDiffusion.NET](https://github.com/DarthAffe/StableDiffusion.NET)
 * Python: [william-murray1204/stable-diffusion-cpp-python](https://github.com/william-murray1204/stable-diffusion-cpp-python)
 * Rust: [newfla/diffusion-rs](https://github.com/newfla/diffusion-rs)
@@ -163,6 +171,7 @@ These projects wrap `stable-diffusion.cpp` for easier use in other languages/fra
 
 These projects use `stable-diffusion.cpp` as a backend for their image generation.
 
+- [GIMP Plugins](https://github.com/themanyone/gimp-plugins)
 - [Jellybox](https://jellybox.com)
 - [Stable Diffusion GUI](https://github.com/fszontagh/sd.cpp.gui.wx)
 - [Stable Diffusion CLI-GUI](https://github.com/piallai/stable-diffusion.cpp)
@@ -177,23 +186,3 @@ These projects use `stable-diffusion.cpp` as a backend for their image generatio
 Thank you to all the people who have already contributed to stable-diffusion.cpp!
 
 [![Contributors](https://contrib.rocks/image?repo=leejet/stable-diffusion.cpp)](https://github.com/leejet/stable-diffusion.cpp/graphs/contributors)
-
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=leejet/stable-diffusion.cpp&type=Date)](https://star-history.com/#leejet/stable-diffusion.cpp&Date)
-
-## References
-
-- [ggml](https://github.com/ggml-org/ggml)
-- [diffusers](https://github.com/huggingface/diffusers)
-- [stable-diffusion](https://github.com/CompVis/stable-diffusion)
-- [sd3-ref](https://github.com/Stability-AI/sd3-ref)
-- [stable-diffusion-stability-ai](https://github.com/Stability-AI/stablediffusion)
-- [stable-diffusion-webui](https://github.com/AUTOMATIC1111/stable-diffusion-webui)
-- [ComfyUI](https://github.com/comfyanonymous/ComfyUI)
-- [k-diffusion](https://github.com/crowsonkb/k-diffusion)
-- [latent-consistency-model](https://github.com/luosiallen/latent-consistency-model)
-- [generative-models](https://github.com/Stability-AI/generative-models/)
-- [PhotoMaker](https://github.com/TencentARC/PhotoMaker)
-- [Wan2.1](https://github.com/Wan-Video/Wan2.1)
-- [Wan2.2](https://github.com/Wan-Video/Wan2.2)

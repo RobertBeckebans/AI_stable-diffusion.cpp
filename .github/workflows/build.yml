@@ -14,6 +14,8 @@ on:
     paths:
       [
         ".github/workflows/**",
+        ".dockerignore",
+        "docker/Dockerfile*",
         "**/CMakeLists.txt",
         "**/Makefile",
         "**/*.h",
@@ -21,11 +23,17 @@ on:
         "**/*.c",
         "**/*.cpp",
         "**/*.cu",
+        "ggml",
+        "examples/server/frontend",
+        "examples/server/frontend/**",
       ]
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
       [
+        ".github/workflows/**",
+        ".dockerignore",
+        "docker/Dockerfile*",
         "**/CMakeLists.txt",
         "**/Makefile",
         "**/*.h",
@@ -33,6 +41,9 @@ on:
         "**/*.c",
         "**/*.cpp",
         "**/*.cu",
+        "ggml",
+        "examples/server/frontend",
+        "examples/server/frontend/**",
       ]
 
 env:
@@ -53,6 +64,16 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
+
       - name: Dependencies
         id: depends
         run: |
@@ -64,13 +85,13 @@ jobs:
         run: |
           mkdir build
           cd build
-          cmake .. -DGGML_AVX2=ON -DSD_BUILD_SHARED_LIBS=ON
+          cmake .. -DSD_BUILD_SHARED_LIBS=ON -DGGML_NATIVE=OFF -DSD_BUILD_SHARED_GGML_LIB=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH='$ORIGIN'
           cmake --build . --config Release
 
       - name: Get commit hash
         id: commit
         if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/master' ) || github.event.inputs.create_release == 'true' }}
-        uses: pr-mpt/actions-commit-hash@v2
+        uses: prompt/actions-commit-hash@v2
 
       - name: Fetch system info
         id: system-info
@@ -106,24 +127,34 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
+
       - name: Dependencies
         id: depends
         run: |
           sudo apt-get update
-          sudo apt-get install build-essential libvulkan-dev glslc
+          sudo apt-get install build-essential libvulkan-dev glslc spirv-headers
 
       - name: Build
         id: cmake_build
         run: |
           mkdir build
           cd build
-          cmake .. -DSD_BUILD_SHARED_LIBS=ON -DSD_VULKAN=ON
+          cmake .. -DSD_BUILD_SHARED_LIBS=ON -DSD_VULKAN=ON -DGGML_NATIVE=OFF -DSD_BUILD_SHARED_GGML_LIB=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH='$ORIGIN'
           cmake --build . --config Release
 
       - name: Get commit hash
         id: commit
         if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/master' ) || github.event.inputs.create_release == 'true' }}
-        uses: pr-mpt/actions-commit-hash@v2
+        uses: prompt/actions-commit-hash@v2
 
       - name: Fetch system info
         id: system-info
@@ -151,7 +182,8 @@ jobs:
 
   build-and-push-docker-images:
     name: Build and push container images
-    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ${{ matrix.runner }}
 
     permissions:
       contents: read
@@ -162,7 +194,22 @@ jobs:
 
     strategy:
       matrix:
-        variant: [musa, sycl, vulkan]
+        variant: [musa, sycl, vulkan, cuda]
+        platform: [linux/amd64]
+        runner: [ubuntu-latest]
+        build-args: [""]
+        tag-suffix: [""]
+        include:
+          - variant: cuda
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            tag-suffix: "-spark"
+            build-args: |
+              CUDA_VERSION=13.0.0
+              UBUNTU_VERSION=24.04
+              CUDA_ARCHITECTURES=121
+              GGML_CUDA_FA_ALL_QUANTS=ON
+              GGML_CUDA_ENABLE_DYNAMIC_CPU_BACKENDS=OFF
 
     env:
       REGISTRY: ghcr.io
@@ -174,10 +221,20 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
+
       - name: Get commit hash
         id: commit
         if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/master' ) || github.event.inputs.create_release == 'true' }}
-        uses: pr-mpt/actions-commit-hash@v2
+        uses: prompt/actions-commit-hash@v2
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -206,12 +263,14 @@ jobs:
         id: build-push
         uses: docker/build-push-action@v6
         with:
-          platforms: linux/amd64
+          context: .
+          platforms: ${{ matrix.platform }}
           push: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/master' ) || github.event.inputs.create_release == 'true' }}
-          file: Dockerfile.${{ matrix.variant }}
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.BRANCH_NAME }}-${{ matrix.variant }}
+          file: docker/Dockerfile.${{ matrix.variant }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.BRANCH_NAME }}-${{ matrix.variant }}${{ matrix.tag-suffix }}
           labels: ${{ steps.meta.outputs.labels }}
           annotations: ${{ steps.meta.outputs.annotations }}
+          build-args: ${{ matrix.build-args }}
 
   macOS-latest-cmake:
     runs-on: macos-latest
@@ -222,6 +281,16 @@ jobs:
         uses: actions/checkout@v3
         with:
           submodules: recursive
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
 
       - name: Dependencies
         id: depends
@@ -240,7 +309,7 @@ jobs:
       - name: Get commit hash
         id: commit
         if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/master' ) || github.event.inputs.create_release == 'true' }}
-        uses: pr-mpt/actions-commit-hash@v2
+        uses: prompt/actions-commit-hash@v2
 
       - name: Fetch system info
         id: system-info
@@ -275,24 +344,28 @@ jobs:
     strategy:
       matrix:
         include:
-          - build: "noavx"
-            defines: "-DGGML_NATIVE=OFF -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_FMA=OFF -DSD_BUILD_SHARED_LIBS=ON"
-          - build: "avx2"
-            defines: "-DGGML_NATIVE=OFF -DGGML_AVX2=ON -DSD_BUILD_SHARED_LIBS=ON"
-          - build: "avx"
-            defines: "-DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=OFF -DSD_BUILD_SHARED_LIBS=ON"
-          - build: "avx512"
-            defines: "-DGGML_NATIVE=OFF -DGGML_AVX512=ON -DGGML_AVX=ON -DGGML_AVX2=ON -DSD_BUILD_SHARED_LIBS=ON"
+          - build: "cpu"
+            defines: "-DGGML_NATIVE=OFF -DSD_BUILD_SHARED_LIBS=ON -DSD_BUILD_SHARED_GGML_LIB=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON"
           - build: "cuda12"
-            defines: "-DSD_CUDA=ON -DSD_BUILD_SHARED_LIBS=ON -DCMAKE_CUDA_ARCHITECTURES='61;70;75;80;86;89;90;100;120' -DCMAKE_CUDA_FLAGS='-Xcudafe \"--diag_suppress=177\" -Xcudafe \"--diag_suppress=550\"'"
+            defines: "-DSD_CUDA=ON -DSD_BUILD_SHARED_LIBS=ON -DCMAKE_CUDA_ARCHITECTURES='61;70;75;80;86;89;90;100;120' -DCMAKE_CUDA_FLAGS='-Xcudafe \"--diag_suppress=177\" -Xcudafe \"--diag_suppress=550\"' -DGGML_NATIVE=OFF -DSD_BUILD_SHARED_GGML_LIB=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON"
           - build: "vulkan"
-            defines: "-DSD_VULKAN=ON -DSD_BUILD_SHARED_LIBS=ON"
+            defines: "-DSD_VULKAN=ON -DSD_BUILD_SHARED_LIBS=ON -DGGML_NATIVE=OFF -DSD_BUILD_SHARED_GGML_LIB=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON"
     steps:
       - name: Clone
         id: checkout
         uses: actions/checkout@v3
         with:
           submodules: recursive
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
 
       - name: Install cuda-toolkit
         id: cuda-toolkit
@@ -324,23 +397,10 @@ jobs:
           cmake .. -DCMAKE_CXX_FLAGS='/bigobj' -G Ninja -DCMAKE_C_COMPILER=cl.exe -DCMAKE_CXX_COMPILER=cl.exe -DCMAKE_BUILD_TYPE=Release ${{ matrix.defines }}
           cmake --build .
 
-      - name: Check AVX512F support
-        id: check_avx512f
-        if: ${{ matrix.build == 'avx512' }}
-        continue-on-error: true
-        run: |
-          cd build
-          $vcdir = $(vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath)
-          $msvc = $(join-path $vcdir $('VC\Tools\MSVC\'+$(gc -raw $(join-path $vcdir 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt')).Trim()))
-          $cl =  $(join-path $msvc 'bin\Hostx64\x64\cl.exe')
-          echo 'int main(void){unsigned int a[4];__cpuid(a,7);return !(a[1]&65536);}' >> avx512f.c
-          & $cl /O2 /GS- /kernel avx512f.c /link /nodefaultlib /entry:main
-          .\avx512f.exe && echo "AVX512F: YES" && ( echo HAS_AVX512F=1 >> $env:GITHUB_ENV ) || echo "AVX512F: NO"
-
       - name: Get commit hash
         id: commit
         if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/master' ) || github.event.inputs.create_release == 'true' }}
-        uses: pr-mpt/actions-commit-hash@v2
+        uses: prompt/actions-commit-hash@v2
 
       - name: Pack artifacts
         id: pack_artifacts
@@ -387,75 +447,110 @@ jobs:
           path: |
             sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-${{ matrix.build }}-x64.zip
 
-  windows-latest-cmake-hip:
+  windows-latest-rocm:
     runs-on: windows-2022
 
     env:
-      HIPSDK_INSTALLER_VERSION: "25.Q3"
-      GPU_TARGETS: "gfx1151;gfx1200;gfx1201;gfx1100;gfx1101;gfx1102;gfx1030;gfx1031;gfx1032"
+      ROCM_VERSION: "7.14.0"
+      GPU_TARGETS: "gfx1010;gfx1011;gfx1012;gfx1030;gfx1031;gfx1032;gfx1033;gfx1034;gfx1035;gfx1036;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1153;gfx1200;gfx1201"
 
     steps:
       - uses: actions/checkout@v3
         with:
           submodules: recursive
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
+
       - name: Cache ROCm Installation
         id: cache-rocm
         uses: actions/cache@v4
         with:
-          path: C:\Program Files\AMD\ROCm
-          key: rocm-${{ env.HIPSDK_INSTALLER_VERSION }}-${{ runner.os }}
+          path: C:\TheRock\build
+          key: rocm-wheels-${{ env.ROCM_VERSION }}-${{ runner.os }}
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.16
         with:
-          key: windows-latest-cmake-hip-${{ env.HIPSDK_INSTALLER_VERSION }}-x64
+          key: windows-rocm-${{ env.ROCM_VERSION }}-x64
           evict-old-files: 1d
 
-      - name: Install ROCm
+      - name: Install ROCm with Wheels
         if: steps.cache-rocm.outputs.cache-hit != 'true'
         run: |
           $ErrorActionPreference = "Stop"
-          write-host "Downloading AMD HIP SDK Installer"
-          Invoke-WebRequest -Uri "https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-${{ env.HIPSDK_INSTALLER_VERSION }}-WinSvr2022-For-HIP.exe" -OutFile "${env:RUNNER_TEMP}\rocm-install.exe"
-          write-host "Installing AMD HIP SDK"
-          $proc = Start-Process "${env:RUNNER_TEMP}\rocm-install.exe" -ArgumentList '-install' -NoNewWindow -PassThru
-          $completed = $proc.WaitForExit(600000)
-          if (-not $completed) {
-              Write-Error "ROCm installation timed out after 10 minutes. Killing the process"
-              $proc.Kill()
-              exit 1
-          }
-          if ($proc.ExitCode -ne 0) {
-              Write-Error "ROCm installation failed with exit code $($proc.ExitCode)"
-              exit 1
-          }
-          write-host "Completed AMD HIP SDK installation"
+          write-host "Setting up Python virtual environment"
 
-      - name: Verify ROCm
+          # Create the venv directly at the cache location to avoid relocation issues
+          New-Item -Path "C:\TheRock\build" -ItemType Directory -Force | Out-Null
+          python -m venv C:\TheRock\build\.venv
+          & C:\TheRock\build\.venv\Scripts\Activate.ps1
+
+          write-host "Upgrading pip"
+          python -m pip install --upgrade pip
+
+          write-host "Installing ROCm wheels for multi-arch support"
+          # Install ROCm wheels for multi-arch support (this may take several minutes)
+          python -m pip install --index-url https://repo.amd.com/rocm/whl-multi-arch/ "rocm[libraries,devel]==${{env.ROCM_VERSION}}"
+
+          # Pre-expand the devel tree so it is included in the cache
+          write-host "Initializing ROCm devel tree"
+          rocm-sdk init
+          if ($LASTEXITCODE -ne 0) { throw "rocm-sdk init failed with exit code $LASTEXITCODE" }
+          write-host "Completed ROCm wheel installation to C:\TheRock\build"
+
+      - name: Setup ROCm Environment
         run: |
-          # Find and test ROCm installation
-          $clangPath = Get-ChildItem 'C:\Program Files\AMD\ROCm\*\bin\clang.exe' | Select-Object -First 1
-          if (-not $clangPath) {
-            Write-Error "ROCm installation not found"
-            exit 1
-          }
-          & $clangPath.FullName --version
-          # Set HIP_PATH environment variable for later steps
-          echo "HIP_PATH=$(Resolve-Path 'C:\Program Files\AMD\ROCm\*\bin\clang.exe' | split-path | split-path)" >> $env:GITHUB_ENV
+          $ErrorActionPreference = "Stop"
+
+          # Activate venv from cache or fresh install
+          & C:\TheRock\build\.venv\Scripts\Activate.ps1
+
+          # Expand the devel tree (idempotent; no-op if already done during install)
+          rocm-sdk init
+          if ($LASTEXITCODE -ne 0) { throw "rocm-sdk init failed with exit code $LASTEXITCODE" }
+
+          # Get ROCm installation paths using the rocm-sdk CLI tool
+          $rocmPath = (rocm-sdk path --root)
+          if (-not $rocmPath) { throw "rocm-sdk path --root returned empty - devel package may not be installed" }
+          $rocmPath = $rocmPath.Trim()
+          $cmakePath = (rocm-sdk path --cmake).Trim()
+          $binPath = (rocm-sdk path --bin).Trim()
+          write-host "ROCm root: $rocmPath"
+          write-host "CMake path: $cmakePath"
+          write-host "Bin path: $binPath"
+
+          echo "HIP_PATH=$rocmPath" >> $env:GITHUB_ENV
+          echo "CMAKE_PREFIX_PATH=$cmakePath" >> $env:GITHUB_ENV
+          echo "HIP_DEVICE_LIB_PATH=$rocmPath\lib\llvm\amdgcn\bitcode" >> $env:GITHUB_ENV
+          echo "HIP_PLATFORM=amd" >> $env:GITHUB_ENV
+          echo "LLVM_PATH=$rocmPath\lib\llvm" >> $env:GITHUB_ENV
+          echo "$binPath" >> $env:GITHUB_PATH
+
+          # Keep venv in PATH for subsequent steps
+          echo "C:\TheRock\build\.venv\Scripts" >> $env:GITHUB_PATH
 
       - name: Build
         run: |
           mkdir build
           cd build
-          $env:CMAKE_PREFIX_PATH="${env:HIP_PATH}"
           cmake .. `
             -G "Unix Makefiles" `
+            -DCMAKE_PREFIX_PATH="${env:HIP_PATH}" `
             -DSD_HIPBLAS=ON `
             -DSD_BUILD_SHARED_LIBS=ON `
             -DGGML_NATIVE=OFF `
-            -DCMAKE_C_COMPILER=clang `
-            -DCMAKE_CXX_COMPILER=clang++ `
+            -DCMAKE_C_COMPILER="${env:HIP_PATH}\lib\llvm\bin\clang.exe" `
+            -DCMAKE_CXX_COMPILER="${env:HIP_PATH}\lib\llvm\bin\clang++.exe" `
+            -DCMAKE_HIP_COMPILER="${env:HIP_PATH}\lib\llvm\bin\clang.exe" `
+            -DHIP_PATH="${env:HIP_PATH}" `
             -DCMAKE_BUILD_TYPE=Release `
             -DGPU_TARGETS="${{ env.GPU_TARGETS }}"
           cmake --build . --config Release --parallel ${env:NUMBER_OF_PROCESSORS}
@@ -468,98 +563,108 @@ jobs:
       - name: Pack artifacts
         if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/master' ) || github.event.inputs.create_release == 'true' }}
         run: |
-          md "build\bin\rocblas\library\"
-          md "build\bin\hipblaslt\library"
-          cp "${env:HIP_PATH}\bin\hipblas.dll" "build\bin\"
-          cp "${env:HIP_PATH}\bin\hipblaslt.dll" "build\bin\"
-          cp "${env:HIP_PATH}\bin\rocblas.dll" "build\bin\"
-          cp "${env:HIP_PATH}\bin\rocblas\library\*" "build\bin\rocblas\library\"
-          cp "${env:HIP_PATH}\bin\hipblaslt\library\*" "build\bin\hipblaslt\library\"
-          7z a sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-rocm-x64.zip .\build\bin\*
+          7z a sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-rocm-${{ env.ROCM_VERSION }}-x64.zip .\build\bin\*
 
       - name: Upload artifacts
         if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/master' ) || github.event.inputs.create_release == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-rocm-x64.zip
+          name: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-rocm-${{ env.ROCM_VERSION }}-x64.zip
           path: |
-            sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-rocm-x64.zip
+            sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-win-rocm-${{ env.ROCM_VERSION }}-x64.zip
 
   ubuntu-latest-rocm:
-    runs-on: ubuntu-latest
-    container: rocm/dev-ubuntu-24.04:7.2
+    runs-on: ubuntu-24.04
 
     env:
-      ROCM_VERSION: "7.2"
       UBUNTU_VERSION: "24.04"
-      GPU_TARGETS: "gfx1151;gfx1150;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201"
+
+    strategy:
+      matrix:
+        include:
+          - ROCM_VERSION: "7.14.0"
+            gpu_targets: "gfx900;gfx906;gfx908;gfx90a;gfx90c;gfx942;gfx950;gfx1010;gfx1011;gfx1012;gfx1030;gfx1031;gfx1032;gfx1033;gfx1034;gfx1035;gfx1036;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1153;gfx1200;gfx1201"
+            build: x64
 
     steps:
-      - run: apt-get update && apt-get install -y git
       - name: Clone
         id: checkout
         uses: actions/checkout@v6
         with:
           submodules: recursive
 
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.16
+        with:
+          key: ubuntu-rocm-cmake-${{ matrix.ROCM_VERSION }}-${{ matrix.build }}
+          evict-old-files: 1d
+
+      - name: Dependencies
+        id: depends
+        run: |
+          sudo apt install -y build-essential git cmake wget
+
       - name: Free disk space
         run: |
-          # Remove preinstalled SDKs and caches not needed for this job
+          df -h
+
+          # Remove preinstalled SDKs and caches not needed for this job before
+          # installing ROCm. The legacy ROCm apt packages are large enough to
+          # exhaust ubuntu-latest if cleanup runs after installation.
           sudo rm -rf /usr/share/dotnet || true
           sudo rm -rf /usr/local/lib/android || true
           sudo rm -rf /opt/ghc || true
           sudo rm -rf /usr/local/.ghcup || true
           sudo rm -rf /opt/hostedtoolcache || true
+          sudo rm -rf /usr/share/swift || true
+          sudo rm -rf /usr/local/share/boost || true
+          docker system prune -af || true
 
-          # Remove old package lists and caches
-          sudo rm -rf /var/lib/apt/lists/* || true
           sudo apt clean
+          df -h
 
-      - name: Dependencies
-        id: depends
+      - name: Setup TheRock with Wheels
+        id: therock_env
         run: |
-          sudo apt-get update
-          sudo apt install -y \
-            cmake \
-            hip-dev \
-            hipblas-dev \
-            ninja-build \
-            rocm-dev \
-            zip
-          # Clean apt caches to recover disk space
-          sudo apt clean
-          sudo rm -rf /var/lib/apt/lists/* || true
+          # Create Python virtual environment
+          python3 -m venv .venv
+          source .venv/bin/activate
 
-      - name: Setup ROCm Environment
-        run: |
-          # Add ROCm to PATH for current session
-          echo "/opt/rocm/bin" >> $GITHUB_PATH
+          # Install ROCm wheels for build
+          # libraries = HIP runtime and CMake configs needed for linking
+          # devel = compilers, headers, static libs
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://repo.amd.com/rocm/whl-multi-arch/ "rocm[libraries,devel]==${{matrix.ROCM_VERSION}}"
 
-          # Build regex pattern from ${{ env.GPU_TARGETS }} (match target as substring)
-          TARGET_REGEX="($(printf '%s' "${{ env.GPU_TARGETS }}" | sed 's/;/|/g'))"
+          # Get ROCm installation paths using the rocm-sdk CLI tool
+          ROCM_PATH=$(rocm-sdk path --root)
+          CMAKE_PATH=$(rocm-sdk path --cmake)
+          BIN_PATH=$(rocm-sdk path --bin)
+          echo "ROCM_PATH=$ROCM_PATH"
+          echo "CMAKE_PATH=$CMAKE_PATH"
+          echo "BIN_PATH=$BIN_PATH"
 
-          # Remove library files for architectures we're not building for to save disk space
-          echo "Cleaning up unneeded architecture files..."
-          cd /opt/rocm/lib/rocblas/library
-          # Keep only our target architectures
-          for file in *; do
-            if printf '%s' "$file" | grep -q 'gfx'; then
-              if ! printf '%s' "$file" | grep -Eq "$TARGET_REGEX"; then
-                echo "Removing $file" &&
-                sudo rm -f "$file";
-              fi
-            fi
-          done
+          # Set environment variables
+          echo "ROCM_PATH=$ROCM_PATH" >> $GITHUB_ENV
+          echo "CMAKE_PREFIX_PATH=$CMAKE_PATH" >> $GITHUB_ENV
+          echo "HIP_PATH=$ROCM_PATH" >> $GITHUB_ENV
+          echo "PATH=$BIN_PATH:${PATH}" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}" >> $GITHUB_ENV
 
-          cd /opt/rocm/lib/hipblaslt/library
-          for file in *; do
-            if printf '%s' "$file" | grep -q 'gfx'; then
-              if ! printf '%s' "$file" | grep -Eq "$TARGET_REGEX"; then
-                echo "Removing $file" &&
-                sudo rm -f "$file";
-              fi
-            fi
-          done
+          # Keep venv activated for subsequent steps
+          echo "$(pwd)/.venv/bin" >> $GITHUB_PATH
+
+      # setup-node installs into /opt/hostedtoolcache, which is removed above.
+      # Keep Node/pnpm setup after disk cleanup so the server frontend can be embedded.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.1
 
       - name: Build
         id: cmake_build
@@ -567,21 +672,26 @@ jobs:
           mkdir build
           cd build
           cmake .. -G Ninja \
-            -DCMAKE_CXX_COMPILER=amdclang++ \
-            -DCMAKE_C_COMPILER=amdclang \
+            -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" \
+            -DCMAKE_HIP_FLAGS="-mllvm --amdgpu-unroll-threshold-local=600" \
             -DCMAKE_BUILD_TYPE=Release \
             -DSD_HIPBLAS=ON \
-            -DGPU_TARGETS="${{ env.GPU_TARGETS }}" \
-            -DAMDGPU_TARGETS="${{ env.GPU_TARGETS }}" \
+            -DHIP_PLATFORM=amd \
+            -DGPU_TARGETS="${{ matrix.gpu_targets }}" \
             -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DGGML_NATIVE=OFF \
+            -DSD_BUILD_SHARED_GGML_LIB=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_CPU_ALL_VARIANTS=ON \
             -DSD_BUILD_SHARED_LIBS=ON
           cmake --build . --config Release
 
       - name: Get commit hash
         id: commit
         if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/master' ) || github.event.inputs.create_release == 'true' }}
-        uses: pr-mpt/actions-commit-hash@v2
+        uses: prompt/actions-commit-hash@v2
 
       - name: Prepare artifacts
         id: prepare_artifacts
@@ -590,16 +700,6 @@ jobs:
           # Copy licenses
           cp ggml/LICENSE ./build/bin/ggml.txt
           cp LICENSE ./build/bin/stable-diffusion.cpp.txt
-
-          # Move ROCm runtime libraries (to avoid double space consumption)
-          sudo mv /opt/rocm/lib/librocsparse.so* ./build/bin/
-          sudo mv /opt/rocm/lib/libhsa-runtime64.so* ./build/bin/
-          sudo mv /opt/rocm/lib/libamdhip64.so* ./build/bin/
-          sudo mv /opt/rocm/lib/libhipblas.so* ./build/bin/
-          sudo mv /opt/rocm/lib/libhipblaslt.so* ./build/bin/
-          sudo mv /opt/rocm/lib/librocblas.so* ./build/bin/
-          sudo mv /opt/rocm/lib/rocblas/ ./build/bin/
-          sudo mv /opt/rocm/lib/hipblaslt/ ./build/bin/
 
       - name: Fetch system info
         id: system-info
@@ -615,15 +715,15 @@ jobs:
         run: |
           cp ggml/LICENSE ./build/bin/ggml.txt
           cp LICENSE ./build/bin/stable-diffusion.cpp.txt
-          zip -y -r sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-Ubuntu-${{ env.UBUNTU_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-rocm.zip ./build/bin
+          zip -y -r sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-Ubuntu-${{ env.UBUNTU_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-rocm-${{ matrix.ROCM_VERSION }}.zip ./build/bin
 
       - name: Upload artifacts
         if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/master' ) || github.event.inputs.create_release == 'true' }}
         uses: actions/upload-artifact@v4
         with:
-          name: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-Ubuntu-${{ env.UBUNTU_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-rocm.zip
+          name: sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-Ubuntu-${{ env.UBUNTU_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-rocm-${{ matrix.ROCM_VERSION }}.zip
           path: |
-            sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-Ubuntu-${{ env.UBUNTU_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-rocm.zip
+            sd-${{ env.BRANCH_NAME }}-${{ steps.commit.outputs.short }}-bin-${{ steps.system-info.outputs.OS_TYPE }}-Ubuntu-${{ env.UBUNTU_VERSION }}-${{ steps.system-info.outputs.CPU_ARCH }}-rocm-${{ matrix.ROCM_VERSION }}.zip
 
   release:
     if: ${{ ( github.event_name == 'push' && github.ref == 'refs/heads/master' ) || github.event.inputs.create_release == 'true' }}
@@ -637,7 +737,7 @@ jobs:
       - build-and-push-docker-images
       - macOS-latest-cmake
       - windows-latest-cmake
-      - windows-latest-cmake-hip
+      - windows-latest-rocm
 
     steps:
       - name: Clone
@@ -660,7 +760,7 @@ jobs:
 
       - name: Get commit hash
         id: commit
-        uses: pr-mpt/actions-commit-hash@v2
+        uses: prompt/actions-commit-hash@v2
 
       - name: Create release
         id: create_release
