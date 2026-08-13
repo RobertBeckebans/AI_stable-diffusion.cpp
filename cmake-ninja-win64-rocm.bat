@@ -31,6 +31,25 @@ if errorlevel 1 (
 rem Build im Release-Mode
 cmake --build build --config Release
 
-echo Fertig.
+if errorlevel 1 (
+  echo Build fehlgeschlagen.
+  pause
+  exit /b 1
+)
+
+rem ROCm-Runtime-DLLs neben die gebauten Exes kopieren (sonst Exit 0xC0000135 / DLL not found).
+rem Die Exes liegen bei "Ninja Multi-Config" unter build\bin\Release\.
+set EXE_OUT=build\bin\Release
+set ROCM_DLLS=amdhip64_6.dll hipblas.dll amd_comgr_2.dll rocblas.dll hipblaslt.dll
+for %%D in (%ROCM_DLLS%) do (
+  if exist "%ROCM_BIN%\%%D" (
+    copy /Y "%ROCM_BIN%\%%D" "%EXE_OUT%\%%D" >nul
+    echo Kopiert: %%D
+  ) else (
+    echo WARNUNG: %%D nicht gefunden in %ROCM_BIN%
+  )
+)
+
+echo Fertig. Exes liegen in %EXE_OUT%\. 
 pause
 endlocal
