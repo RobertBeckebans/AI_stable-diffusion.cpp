@@ -75,8 +75,9 @@ find . -regex ".*\.\(h\|hpp\)" \
 	! -path "./libs/*" \
 	! -path "./extern/*" \
 	! -path "./ggml/*" \
-	! -path "./third_party/*" \
+	! -path "./thirdparty/*" \
 	! -path "./docs/ideas/*" \
+	! -path "./src/tokenizers/vocab/*" \
 	-print0 | xargs -0 -P 16 "$CLANGFMT_BIN" -i --verbose
 
 cp .clang-format-cpp .clang-format
@@ -87,7 +88,7 @@ find . -regex ".*\.\(c\|cpp\)" \
 	! -path "./libs/*" \
 	! -path "./extern/*" \
 	! -path "./ggml/*" \
-	! -path "./third_party/*" \
+	! -path "./thirdparty/*" \
 	! -path "./docs/ideas/*" \
 	-print0 | xargs -0 -P 16 "$CLANGFMT_BIN" -i --verbose
 
