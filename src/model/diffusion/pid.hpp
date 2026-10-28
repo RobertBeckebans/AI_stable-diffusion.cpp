@@ -1,13 +1,19 @@
 #ifndef __SD_MODEL_DIFFUSION_PID_HPP__
 #define __SD_MODEL_DIFFUSION_PID_HPP__
 
+#include <cinttypes>
 #include <cmath>
 #include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
+#include "core/pe_cache.h"
 
-#include "core/ggml_extend.hpp"
+#include "core/ggml_extend.h"
+#include "core/ggml_runner.h"
+#include "core/ggml_tensor_utils.h"
+#include "core/util.h"
+#include "model/common/ggml_block.hpp"
 #include "model/common/rope.hpp"
 #include "model/diffusion/dit.hpp"
 #include "model/diffusion/mmdit.hpp"
@@ -109,16 +115,16 @@ namespace Pid {
                 config.lq_latent_channels    = latent_proj_in_channels;
                 config.lq_latent_down_factor = latent_proj_in_channels >= 64 ? 16 : 8;
             }
-            LOG_DEBUG("pid: version = %s, patch_depth = %" PRId64 ", pixel_depth = %" PRId64 ", patch_mlp_hidden_dim = %" PRId64 ", lq_latent_channels = %" PRId64 ", lq_hidden_dim = %" PRId64 ", lq_latent_down_factor = %" PRId64 ", lq_latent_unpatchify_factor = %" PRId64 ", lq_interval = %" PRId64,
-                      config.pit_lq_inject ? "1.5" : "1",
-                      config.patch_depth,
-                      config.pixel_depth,
-                      config.patch_mlp_hidden_dim,
-                      config.lq_latent_channels,
-                      config.lq_hidden_dim,
-                      config.lq_latent_down_factor,
-                      config.lq_latent_unpatchify_factor,
-                      config.lq_interval);
+            LOG_VERBOSE("pid: version = %s, patch_depth = %" PRId64 ", pixel_depth = %" PRId64 ", patch_mlp_hidden_dim = %" PRId64 ", lq_latent_channels = %" PRId64 ", lq_hidden_dim = %" PRId64 ", lq_latent_down_factor = %" PRId64 ", lq_latent_unpatchify_factor = %" PRId64 ", lq_interval = %" PRId64,
+                        config.pit_lq_inject ? "1.5" : "1",
+                        config.patch_depth,
+                        config.pixel_depth,
+                        config.patch_mlp_hidden_dim,
+                        config.lq_latent_channels,
+                        config.lq_hidden_dim,
+                        config.lq_latent_down_factor,
+                        config.lq_latent_unpatchify_factor,
+                        config.lq_interval);
             return config;
         }
     };
@@ -130,13 +136,13 @@ namespace Pid {
         return Rope::flatten(Rope::rope(Rope::linspace(0.f, static_cast<float>(length - 1), length), dim, theta));
     }
 
-    inline std::vector<float> make_rope_2d(int height,
-                                           int width,
-                                           int dim,
-                                           float theta    = 10000.f,
-                                           float scale    = 16.f,
-                                           int ref_grid_h = 0,
-                                           int ref_grid_w = 0) {
+    inline Rope::Embedding make_rope_2d(int height,
+                                        int width,
+                                        int dim,
+                                        float theta    = 10000.f,
+                                        float scale    = 16.f,
+                                        int ref_grid_h = 0,
+                                        int ref_grid_w = 0) {
         GGML_ASSERT(dim % 4 == 0);
         return Rope::embed_2d_interleaved(height, width, dim, theta, scale, ref_grid_h, ref_grid_w);
     }
@@ -639,7 +645,7 @@ namespace Pid {
 
             int64_t effective_down_factor = config.lq_latent_down_factor / unpatchify_factor;
             float z_to_patch_ratio        = static_cast<float>(config.lq_sr_scale * effective_down_factor) /
-                                     static_cast<float>(config.patch_size);
+                                            static_cast<float>(config.patch_size);
             GGML_ASSERT(z_to_patch_ratio >= 1.0f);
             if (lq_latent->ne[0] != target_pW || lq_latent->ne[1] != target_pH) {
                 lq_latent = ggml_interpolate(ctx->ggml_ctx,
@@ -817,12 +823,9 @@ namespace Pid {
     };
 
     struct PiDRunner : public DiffusionModelRunner {
+        sd::PECache pe_cache_;
         PixelDiTConfig config;
         PixelDiT model;
-        std::vector<float> pos_img_vec;
-        std::vector<float> pos_txt_vec;
-        std::vector<float> pixel_pos_vec;
-        std::vector<float> pixel_pos_comp_vec;
 
         PiDRunner(ggml_backend_t backend,
                   const String2TensorStorage& tensor_storage_map,
@@ -862,57 +865,53 @@ namespace Pid {
             int64_t Hs = Hp / config.patch_size;
             int64_t Ws = Wp / config.patch_size;
 
-            pos_img_vec  = make_rope_2d(static_cast<int>(Hs),
-                                        static_cast<int>(Ws),
-                                        static_cast<int>(config.hidden_size / config.num_groups),
-                                        10000.f,
-                                        16.f,
-                                        static_cast<int>(config.rope_ref_grid_h),
-                                        static_cast<int>(config.rope_ref_grid_w));
-            auto pos_img = ggml_new_tensor_4d(compute_ctx,
-                                              GGML_TYPE_F32,
-                                              2,
-                                              2,
-                                              config.hidden_size / config.num_groups / 2,
-                                              Hs * Ws);
-            set_backend_tensor_data(pos_img, pos_img_vec.data());
+            sd::PECacheKey pos_img_key("pid.pos_img");
+            pos_img_key.add(Hs).add(Ws).add(config.hidden_size).add(config.num_groups).add(config.rope_ref_grid_h);
+            pos_img_key.add(config.rope_ref_grid_w).add(circular_x_enabled).add(circular_y_enabled);
+            auto pos_img = make_input(pe_cache_.get_or_create(pos_img_key, [&]() {
+                auto pos_img_vec = finish_rope_pe(make_rope_2d(static_cast<int>(Hs),
+                                                               static_cast<int>(Ws),
+                                                               static_cast<int>(config.hidden_size / config.num_groups),
+                                                               10000.f,
+                                                               16.f,
+                                                               static_cast<int>(config.rope_ref_grid_h),
+                                                               static_cast<int>(config.rope_ref_grid_w)));
+                return sd::Tensor<float>({2, 2, config.hidden_size / config.num_groups / 2, Hs * Ws}, std::move(pos_img_vec));
+            }));
 
             int64_t Ltxt = std::min<int64_t>(context->ne[1], config.txt_max_length);
-            pos_txt_vec  = make_rope_1d(static_cast<int>(Ltxt),
-                                        static_cast<int>(config.hidden_size / config.num_groups),
-                                        config.text_rope_theta);
-            auto pos_txt = ggml_new_tensor_4d(compute_ctx,
-                                              GGML_TYPE_F32,
-                                              2,
-                                              2,
-                                              config.hidden_size / config.num_groups / 2,
-                                              Ltxt);
-            set_backend_tensor_data(pos_txt, pos_txt_vec.data());
+            sd::PECacheKey pos_txt_key("pid.pos_txt");
+            pos_txt_key.add(Ltxt).add(config.hidden_size).add(config.num_groups).add(config.text_rope_theta);
+            auto pos_txt = make_input(pe_cache_.get_or_create(pos_txt_key, [&]() {
+                auto pos_txt_vec = make_rope_1d(static_cast<int>(Ltxt),
+                                                static_cast<int>(config.hidden_size / config.num_groups),
+                                                config.text_rope_theta);
+                return sd::Tensor<float>({2, 2, config.hidden_size / config.num_groups / 2, Ltxt}, std::move(pos_txt_vec));
+            }));
 
-            pixel_pos_vec  = make_pixel_abs_pos(static_cast<int>(Hp),
-                                                static_cast<int>(Wp),
-                                                static_cast<int>(config.pixel_hidden_size));
-            auto pixel_pos = ggml_new_tensor_3d(compute_ctx,
-                                                GGML_TYPE_F32,
-                                                config.pixel_hidden_size,
-                                                Wp * Hp,
-                                                1);
-            set_backend_tensor_data(pixel_pos, pixel_pos_vec.data());
+            sd::PECacheKey pixel_pos_key("pid.pixel_pos");
+            pixel_pos_key.add(Hp).add(Wp).add(config.pixel_hidden_size);
+            auto pixel_pos = make_input(pe_cache_.get_or_create(pixel_pos_key, [&]() {
+                auto pixel_pos_vec = make_pixel_abs_pos(static_cast<int>(Hp),
+                                                        static_cast<int>(Wp),
+                                                        static_cast<int>(config.pixel_hidden_size));
+                return sd::Tensor<float>({config.pixel_hidden_size, Wp * Hp, 1}, std::move(pixel_pos_vec));
+            }));
 
-            pixel_pos_comp_vec  = make_rope_2d(static_cast<int>(Hs),
-                                               static_cast<int>(Ws),
-                                               static_cast<int>(config.pixel_attn_hidden_size / config.pixel_num_groups),
-                                               10000.f,
-                                               16.f,
-                                               static_cast<int>(config.rope_ref_grid_h),
-                                               static_cast<int>(config.rope_ref_grid_w));
-            auto pixel_pos_comp = ggml_new_tensor_4d(compute_ctx,
-                                                     GGML_TYPE_F32,
-                                                     2,
-                                                     2,
-                                                     config.pixel_attn_hidden_size / config.pixel_num_groups / 2,
-                                                     Hs * Ws);
-            set_backend_tensor_data(pixel_pos_comp, pixel_pos_comp_vec.data());
+            sd::PECacheKey pixel_pos_comp_key("pid.pixel_pos_comp");
+            pixel_pos_comp_key.add(Hs).add(Ws).add(config.pixel_attn_hidden_size).add(config.pixel_num_groups);
+            pixel_pos_comp_key.add(config.rope_ref_grid_h).add(config.rope_ref_grid_w).add(circular_x_enabled);
+            pixel_pos_comp_key.add(circular_y_enabled);
+            auto pixel_pos_comp = make_input(pe_cache_.get_or_create(pixel_pos_comp_key, [&]() {
+                auto pixel_pos_comp_vec = finish_rope_pe(make_rope_2d(static_cast<int>(Hs),
+                                                                      static_cast<int>(Ws),
+                                                                      static_cast<int>(config.pixel_attn_hidden_size / config.pixel_num_groups),
+                                                                      10000.f,
+                                                                      16.f,
+                                                                      static_cast<int>(config.rope_ref_grid_h),
+                                                                      static_cast<int>(config.rope_ref_grid_w)));
+                return sd::Tensor<float>({2, 2, config.pixel_attn_hidden_size / config.pixel_num_groups / 2, Hs * Ws}, std::move(pixel_pos_comp_vec));
+            }));
 
             auto runner_ctx = get_context();
             auto out        = model.forward(&runner_ctx,
@@ -938,7 +937,7 @@ namespace Pid {
             auto get_graph = [&]() -> ggml_cgraph* {
                 return build_graph(x, timesteps, context, lq_latent, degrade_sigma);
             };
-            return restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false, false, false), x.dim());
+            return restore_trailing_singleton_dims(GGMLRunner::compute(get_graph, n_threads, false), x.dim());
         }
 
         sd::Tensor<float> compute(int n_threads,

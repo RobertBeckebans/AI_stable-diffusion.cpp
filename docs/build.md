@@ -2,19 +2,58 @@
 
 ## Get the Code
 
-```
+```shell
 git clone --recursive https://github.com/leejet/stable-diffusion.cpp
 cd stable-diffusion.cpp
 ```
 
-- If you have already cloned the repository, you can use the following command to update the repository to the latest code.
+If you already cloned the repository without submodules, initialize them from the repository root:
 
+```shell
+git submodule update --init --recursive
 ```
+
+To update an existing checkout and its submodules:
+
+```shell
 cd stable-diffusion.cpp
 git pull origin master
-git submodule init
-git submodule update
+git submodule update --init --recursive
 ```
+
+## Selecting a GGML source tree
+
+By default, sd.cpp builds the patched GGML submodule in `ggml/`. To build with
+an upstream GGML checkout instead, enable `SD_USE_UPSTREAM_GGML` and set
+`SD_GGML_SOURCE_DIR`:
+
+```shell
+cmake -S . -B build-upstream -DSD_USE_UPSTREAM_GGML=ON -DSD_GGML_SOURCE_DIR=../ggml-upstream
+cmake --build build-upstream --config Release
+```
+
+The selected source tree supplies both the library and its private headers.
+Backend options such as `-DSD_CUDA=ON` apply to the selected tree as usual.
+
+`SD_USE_UPSTREAM_GGML` defaults to `OFF`, which enables the patched GGML
+extensions. Set it to `ON` when using upstream GGML; it selects the compatibility
+mode and does not download or replace the GGML source tree. Upstream mode keeps
+the original FP8 safetensors handling: FP8 tensors are converted to F16 at load
+time (one byte per element in the file, two in RAM and VRAM). INT8
+tensorwise/convrot is disabled and its model files are rejected with an explicit
+error. FP8 GGUF files, FP8 weight type requests and tensor type rules are also
+rejected; no automatic conversion is performed.
+
+Upstream GGML may lack some operators and performance optimizations provided by
+the patched version. A warning is emitted during CMake configuration and when
+creating an inference context. Ordinary floating-point and shared GGML
+quantization types remain available, subject to backend operator support.
+
+`SD_USE_SYSTEM_GGML=ON` instead links an installed GGML CMake package, located
+with `ggml_DIR` or `CMAKE_PREFIX_PATH`. In that mode, `SD_GGML_SOURCE_DIR` must
+point to the matching source tree for private headers. The installed library
+must use the same ABI settings as sd.cpp, including `GGML_MAX_NAME`.
+Set `SD_USE_UPSTREAM_GGML=ON` as well if the installed package is upstream GGML.
 
 ## WebP and WebM Support in Examples
 
@@ -56,6 +95,10 @@ cmake --build . --config Release
 
 ## Build with CUDA
 
+Native SageAttention is included when using CUDA with patched GGML
+(`SD_USE_UPSTREAM_GGML=OFF`).
+See [SageAttention](sage_attention.md) for GPU requirements and `--sage-attn` usage.
+
 This provides GPU acceleration using NVIDIA GPU. Make sure to have the CUDA toolkit installed. You can download it from your Linux distro's package manager (e.g. `apt install nvidia-cuda-toolkit`) or from here: [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads). Recommended to have at least 4 GB of VRAM.
 
 ```shell
@@ -63,6 +106,25 @@ mkdir build && cd build
 cmake .. -DSD_CUDA=ON
 cmake --build . --config Release
 ```
+
+CUDA builds with the bundled patched GGML use the CUTLASS submodule by default
+for eligible INT8 GEMM and CuTe attention operations. If its headers are missing,
+CMake stops with an initialization hint; it does not download them automatically.
+Run `git submodule update --init --recursive` from the repository root before
+configuring.
+
+To build with the existing CUDA implementations without CUTLASS, configure from
+the repository root with:
+
+```shell
+cmake -S . -B build -DSD_CUDA=ON -DGGML_CUDA_CUTLASS_PATH:PATH=
+cmake --build build --config Release
+```
+
+Alternatively, set `GGML_CUDA_CUTLASS_PATH` to another local CUTLASS source
+directory (tested with 3.9.2). Existing CMake caches retain their configured path;
+pass `-UGGML_CUDA_CUTLASS_PATH` when reconfiguring to restore the bundled default.
+Non-CUDA builds do not require CUTLASS.
 
 ## Build with HipBLAS
 
@@ -81,13 +143,15 @@ cmake --build . --config Release
 
 ## Build with MUSA
 
-This provides GPU acceleration using Moore Threads GPU. Make sure to have the MUSA toolkit installed.
+This provides GPU acceleration using Moore Threads GPUs. The configuration below follows upstream validation with MUSA SDK 5.2.0 and MTT S5000 (PH1, `mp_31`). Install that toolkit before building. Older SDKs such as 4.2 may lack the CUB headers required by the current backend.
 
 ```shell
 mkdir build && cd build
-cmake .. -DCMAKE_C_COMPILER=/usr/local/musa/bin/clang -DCMAKE_CXX_COMPILER=/usr/local/musa/bin/clang++ -DSD_MUSA=ON -DCMAKE_BUILD_TYPE=Release
+cmake .. -DCMAKE_C_COMPILER=/usr/local/musa/bin/clang -DCMAKE_CXX_COMPILER=/usr/local/musa/bin/clang++ -DSD_MUSA=ON -DMUSA_ARCHITECTURES=31 -DCMAKE_BUILD_TYPE=Release
 cmake --build . --config Release
 ```
+
+The MUSA Docker image uses the same SDK 5.2.0 development image as upstream for both build and runtime stages, and targets `mp_31` only. It includes the development tools and PyTorch from that base image, so it is larger than a minimal runtime image. Other GPU architectures require separate validation.
 
 ## Build with Metal
 

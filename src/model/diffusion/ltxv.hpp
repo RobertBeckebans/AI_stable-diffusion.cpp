@@ -2,12 +2,16 @@
 #define __SD_MODEL_DIFFUSION_LTXV_HPP__
 
 #include <algorithm>
+#include <cinttypes>
 #include <cmath>
 #include <memory>
 #include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
+#include "core/ggml_extend_backend.h"
+#include "core/ggml_tensor_utils.h"
+#include "core/pe_cache.h"
 
 #include "model/common/block.hpp"
 #include "model/common/rope.hpp"
@@ -129,6 +133,10 @@ namespace LTXV {
         bool self_attention_gated  = false;
         bool cross_attention_gated = false;
 
+        bool ff_bias                         = true;
+        bool audio_ff_bias                   = true;
+        bool use_keyframes_abs_pos_embedding = false;
+
         static std::pair<int64_t, int64_t> infer_attention_layout(int64_t hidden_size,
                                                                   int64_t preferred_heads = -1) {
             if (preferred_heads > 0 && hidden_size % preferred_heads == 0) {
@@ -207,6 +215,19 @@ namespace LTXV {
                 tensor_storage_map.find(prefix + ".transformer_blocks.0.audio_attn2.to_gate_logits.weight") != tensor_storage_map.end()) {
                 config.cross_attention_gated = true;
             }
+            // LTX 2.5 sets ff_bias=false but leaves audio_ff_bias at its default, so the two
+            // branches must be detected separately; older checkpoints ship both sets of biases.
+            if (tensor_storage_map.find(prefix + ".transformer_blocks.0.ff.net.0.proj.bias") == tensor_storage_map.end() &&
+                tensor_storage_map.find(prefix + ".transformer_blocks.0.ff.net.2.bias") == tensor_storage_map.end()) {
+                config.ff_bias = false;
+            }
+            if (tensor_storage_map.find(prefix + ".transformer_blocks.0.audio_ff.net.0.proj.bias") == tensor_storage_map.end() &&
+                tensor_storage_map.find(prefix + ".transformer_blocks.0.audio_ff.net.2.bias") == tensor_storage_map.end()) {
+                config.audio_ff_bias = false;
+            }
+            if (tensor_storage_map.find(prefix + ".keyframes_abs_pos_embedding") != tensor_storage_map.end()) {
+                config.use_keyframes_abs_pos_embedding = true;
+            }
             if (tensor_storage_map.find(prefix + ".caption_projection.linear_1.weight") == tensor_storage_map.end() &&
                 tensor_storage_map.find(prefix + ".caption_projection.linear_2.weight") == tensor_storage_map.end()) {
                 config.use_caption_projection = false;
@@ -257,12 +278,12 @@ namespace LTXV {
                     config.audio_connector_apply_gated_attention = true;
                 }
             }
-            LOG_DEBUG("ltxav: num_layers = %" PRId64 ", hidden_size = %" PRId64 ", num_attention_heads = %" PRId64 ", audio_hidden_size = %" PRId64 ", audio_num_attention_heads = %" PRId64,
-                      config.num_layers,
-                      config.hidden_size,
-                      config.num_attention_heads,
-                      config.audio_hidden_size,
-                      config.audio_num_attention_heads);
+            LOG_VERBOSE("ltxav: num_layers = %" PRId64 ", hidden_size = %" PRId64 ", num_attention_heads = %" PRId64 ", audio_hidden_size = %" PRId64 ", audio_num_attention_heads = %" PRId64,
+                        config.num_layers,
+                        config.hidden_size,
+                        config.num_attention_heads,
+                        config.audio_hidden_size,
+                        config.audio_num_attention_heads);
             return config;
         }
     };
@@ -528,21 +549,22 @@ namespace LTXV {
         return build_rope_matrix_from_frequencies(freqs, dim);
     }
 
-    __STATIC_INLINE__ ggml_tensor* apply_hidden_rope(ggml_context* ctx,
+    __STATIC_INLINE__ ggml_tensor* apply_hidden_rope(GGMLRunnerContext* runner_ctx,
                                                      ggml_tensor* x,
                                                      ggml_tensor* pe,
                                                      int64_t heads,
                                                      int64_t dim_head,
                                                      bool rope_interleaved) {
+        auto ctx = runner_ctx->ggml_ctx;
         GGML_ASSERT(x->ne[0] == heads * dim_head);
         auto x4 = ggml_reshape_4d(ctx, x, dim_head, heads, x->ne[1], x->ne[2]);
         if (pe != nullptr && pe->ne[3] == x->ne[1] * heads) {
             auto x_flat   = ggml_reshape_4d(ctx, x4, dim_head, 1, x->ne[1] * heads, x->ne[2]);
-            auto out_flat = Rope::apply_rope(ctx, x_flat, pe, rope_interleaved);
+            auto out_flat = Rope::apply_rope(runner_ctx, x_flat, pe, rope_interleaved);
             auto out4     = ggml_reshape_4d(ctx, out_flat, dim_head, heads, x->ne[1], x->ne[2]);
             return ggml_reshape_3d(ctx, out4, heads * dim_head, x->ne[1], x->ne[2]);
         }
-        return Rope::apply_rope(ctx, x4, pe, rope_interleaved);
+        return Rope::apply_rope(runner_ctx, x4, pe, rope_interleaved);
     }
 
     struct TimestepEmbedder : public GGMLBlock {
@@ -576,9 +598,9 @@ namespace LTXV {
             : embedding_dim(embedding_dim), embedding_coefficient(embedding_coefficient) {
             blocks["emb.timestep_embedder"] = std::make_shared<TimestepEmbedder>(embedding_dim);
             blocks["linear"]                = std::make_shared<Linear>(embedding_dim,
-                                                        embedding_coefficient * embedding_dim,
-                                                        true,
-                                                        true);
+                                                                       embedding_coefficient * embedding_dim,
+                                                                       true,
+                                                                       true);
         }
 
         std::pair<ggml_tensor*, ggml_tensor*> forward(GGMLRunnerContext* ctx,
@@ -685,12 +707,11 @@ namespace LTXV {
                 if (k_pe == nullptr) {
                     k_pe = pe;
                 }
-                q = apply_hidden_rope(ctx->ggml_ctx, q, pe, heads, dim_head, rope_interleaved);
-                k = apply_hidden_rope(ctx->ggml_ctx, k, k_pe, heads, dim_head, rope_interleaved);
+                q = apply_hidden_rope(ctx, q, pe, heads, dim_head, rope_interleaved);
+                k = apply_hidden_rope(ctx, k, k_pe, heads, dim_head, rope_interleaved);
             }
 
-            auto out = ggml_ext_attention_ext(ctx->ggml_ctx,
-                                              ctx->backend,
+            auto out = ggml_ext_attention_ext(ctx,
                                               q,
                                               k,
                                               v,
@@ -874,8 +895,7 @@ namespace LTXV {
                          const String2TensorStorage& tensor_storage_map = {},
                          const std::string prefix                       = "") override {
             if (num_learnable_registers > 0) {
-                ggml_type wtype               = get_type(prefix + "learnable_registers", tensor_storage_map, GGML_TYPE_F32);
-                params["learnable_registers"] = ggml_new_tensor_2d(ctx, wtype, hidden_size, num_learnable_registers);
+                params["learnable_registers"] = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hidden_size, num_learnable_registers);
             }
         }
 
@@ -1130,7 +1150,9 @@ namespace LTXV {
                                 int64_t a_context_dim,
                                 bool apply_gated_attention,
                                 bool cross_attention_adaln,
-                                bool video_rope_interleaved)
+                                bool video_rope_interleaved,
+                                bool ff_bias       = true,
+                                bool audio_ff_bias = true)
             : v_dim(v_dim),
               a_dim(a_dim),
               cross_attention_adaln(cross_attention_adaln) {
@@ -1140,8 +1162,8 @@ namespace LTXV {
             blocks["audio_attn2"]         = std::make_shared<CrossAttention>(a_dim, a_context_dim, a_heads, ad_head, apply_gated_attention, false);
             blocks["audio_to_video_attn"] = std::make_shared<CrossAttention>(v_dim, a_dim, a_heads, ad_head, apply_gated_attention, false);
             blocks["video_to_audio_attn"] = std::make_shared<CrossAttention>(a_dim, v_dim, a_heads, ad_head, apply_gated_attention, false);
-            blocks["ff"]                  = std::make_shared<FeedForward>(v_dim, v_dim, 4, FeedForward::Activation::GELU);
-            blocks["audio_ff"]            = std::make_shared<FeedForward>(a_dim, a_dim, 4, FeedForward::Activation::GELU);
+            blocks["ff"]                  = std::make_shared<FeedForward>(v_dim, v_dim, 4, FeedForward::Activation::GELU, false, ff_bias);
+            blocks["audio_ff"]            = std::make_shared<FeedForward>(a_dim, a_dim, 4, FeedForward::Activation::GELU, false, audio_ff_bias);
         }
 
         std::vector<ggml_tensor*> get_ada_values(GGMLRunnerContext* ctx,
@@ -1236,7 +1258,7 @@ namespace LTXV {
                                                      v_context,
                                                      attn2.get(),
                                                      v_table,
-                                                    cross_attention_adaln ? params["prompt_scale_shift_table"] : nullptr,
+                                                     cross_attention_adaln ? params["prompt_scale_shift_table"] : nullptr,
                                                      v_timestep,
                                                      v_prompt_timestep,
                                                      v_dim,
@@ -1254,7 +1276,7 @@ namespace LTXV {
                                                          a_context,
                                                          audio_attn2.get(),
                                                          a_table,
-                                                        cross_attention_adaln ? params["audio_prompt_scale_shift_table"] : nullptr,
+                                                         cross_attention_adaln ? params["audio_prompt_scale_shift_table"] : nullptr,
                                                          a_timestep,
                                                          a_prompt_timestep,
                                                          a_dim,
@@ -1320,6 +1342,12 @@ namespace LTXV {
                                                                    get_type(prefix + "audio_scale_shift_table", tensor_storage_map, GGML_TYPE_F32),
                                                                    config.audio_hidden_size,
                                                                    2);
+            if (config.use_keyframes_abs_pos_embedding) {
+                params["keyframes_abs_pos_embedding"] = ggml_new_tensor_2d(ctx,
+                                                                           get_type(prefix + "keyframes_abs_pos_embedding", tensor_storage_map, GGML_TYPE_F32),
+                                                                           config.hidden_size,
+                                                                           1);
+            }
         }
 
         LTXAVModelBlock(const LTXAVConfig& config)
@@ -1386,7 +1414,9 @@ namespace LTXV {
                                                                                                               config.audio_cross_attention_dim,
                                                                                                               config.self_attention_gated || config.cross_attention_gated,
                                                                                                               config.cross_attention_adaln,
-                                                                                                              config.video_rope_interleaved);
+                                                                                                              config.video_rope_interleaved,
+                                                                                                              config.ff_bias,
+                                                                                                              config.audio_ff_bias);
             }
 
             blocks["norm_out"]       = std::make_shared<LayerNorm>(config.hidden_size, 1e-6f, false);
@@ -1534,6 +1564,38 @@ namespace LTXV {
             return {v_context, a_context};
         }
 
+        // The video encoder is causal, so the first latent frame covers a single pixel frame while
+        // every later one covers temporal_scale_factor. LTX 2.5 marks that token class with a
+        // learned embedding added right after patchify_proj.
+        ggml_tensor* apply_keyframes_abs_pos_embedding(GGMLRunnerContext* ctx,
+                                                       ggml_tensor* vx,
+                                                       int64_t tokens_per_latent_frame) {
+            if (!config.use_keyframes_abs_pos_embedding || params.count("keyframes_abs_pos_embedding") == 0) {
+                return vx;
+            }
+            int64_t tokens = vx->ne[1];
+            if (tokens_per_latent_frame <= 0 || tokens_per_latent_frame > tokens) {
+                return vx;
+            }
+            auto embedding = params["keyframes_abs_pos_embedding"];
+            auto first     = ggml_cont(ctx->ggml_ctx,
+                                       ggml_view_3d(ctx->ggml_ctx, vx, vx->ne[0], tokens_per_latent_frame, vx->ne[2], vx->nb[1], vx->nb[2], 0));
+            first          = ggml_add(ctx->ggml_ctx, first, embedding);
+            if (tokens_per_latent_frame == tokens) {
+                return first;
+            }
+            auto rest = ggml_cont(ctx->ggml_ctx,
+                                  ggml_view_3d(ctx->ggml_ctx,
+                                               vx,
+                                               vx->ne[0],
+                                               tokens - tokens_per_latent_frame,
+                                               vx->ne[2],
+                                               vx->nb[1],
+                                               vx->nb[2],
+                                               tokens_per_latent_frame * vx->nb[1]));
+            return ggml_concat(ctx->ggml_ctx, first, rest, 1);
+        }
+
         std::vector<ggml_tensor*> get_output_scale_shift(GGMLRunnerContext* ctx,
                                                          ggml_tensor* table,
                                                          ggml_tensor* embedded_timestep,
@@ -1575,6 +1637,7 @@ namespace LTXV {
 
             vx = patchify_video(ctx, vx, n);
             vx = patchify_proj->forward(ctx, vx);
+            vx = apply_keyframes_abs_pos_embedding(ctx, vx, width * height);
             if (ax != nullptr && ggml_nelements(ax) > 0 && audio_time > 0) {
                 ax = patchify_audio(ctx, ax);
                 ax = audio_patchify_proj->forward(ctx, ax);
@@ -1674,14 +1737,9 @@ namespace LTXV {
     };
 
     struct LTXAVRunner : public DiffusionModelRunner {
+        sd::PECache pe_cache_;
         LTXAVConfig config;
         LTXAVModelBlock model;
-        std::vector<float> video_pe_vec;
-        std::vector<float> audio_pe_vec;
-        std::vector<float> video_cross_pe_vec;
-        std::vector<float> audio_cross_pe_vec;
-        std::vector<float> connector_pe_vec;
-        std::vector<float> audio_connector_pe_vec;
         sd::Tensor<float> vx_input_cache;
         sd::Tensor<float> ax_input_cache;
 
@@ -1791,79 +1849,101 @@ namespace LTXV {
             float video_frame_rate    = frame_rate > 0.f ? frame_rate : 24.f;
             int64_t video_token_count = vx->ne[0] * vx->ne[1] * vx->ne[2];
             bool has_video_positions  = !video_positions_tensor.empty();
-            if (has_video_positions) {
-                GGML_ASSERT(video_positions_tensor.shape()[2] == video_token_count);
-                video_pe_vec = build_video_rope_matrix_from_positions(video_positions_tensor,
-                                                                      static_cast<int>(config.hidden_size),
-                                                                      static_cast<int>(config.num_attention_heads),
-                                                                      config.positional_embedding_theta,
-                                                                      config.positional_embedding_max_pos,
-                                                                      config.use_middle_indices_grid);
-            } else {
-                video_pe_vec = build_video_rope_matrix(vx->ne[0],
-                                                       vx->ne[1],
-                                                       vx->ne[2],
-                                                       static_cast<int>(config.hidden_size),
-                                                       static_cast<int>(config.num_attention_heads),
-                                                       video_frame_rate,
-                                                       config.positional_embedding_theta,
-                                                       config.positional_embedding_max_pos,
-                                                       config.vae_scale_factors,
-                                                       config.causal_temporal_positioning,
-                                                       config.use_middle_indices_grid);
-            }
-            auto video_pe = ggml_new_tensor_4d(compute_ctx, GGML_TYPE_F32, 2, 2, config.attention_head_dim / 2, video_token_count * config.num_attention_heads);
-            ggml_set_name(video_pe, "ltxav_video_pe");
-            set_backend_tensor_data(video_pe, video_pe_vec.data());
+            sd::PECacheKey video_pe_key("ltxav_video_pe");
+            video_pe_key.add_shape(vx).add(video_frame_rate).add(video_positions_tensor).add(config.positional_embedding_theta);
+            video_pe_key.add(config.causal_temporal_positioning).add(config.use_middle_indices_grid).add(config.hidden_size);
+            video_pe_key.add(config.num_attention_heads).add(config.attention_head_dim).add(config.positional_embedding_max_pos);
+            video_pe_key.add(std::get<0>(config.vae_scale_factors)).add(std::get<1>(config.vae_scale_factors));
+            video_pe_key.add(std::get<2>(config.vae_scale_factors));
+            auto video_pe = make_input(pe_cache_.get_or_create(video_pe_key, [&]() {
+                std::vector<float> video_pe_vec;
+                if (has_video_positions) {
+                    GGML_ASSERT(video_positions_tensor.shape()[2] == video_token_count);
+                    video_pe_vec = build_video_rope_matrix_from_positions(video_positions_tensor,
+                                                                          static_cast<int>(config.hidden_size),
+                                                                          static_cast<int>(config.num_attention_heads),
+                                                                          config.positional_embedding_theta,
+                                                                          config.positional_embedding_max_pos,
+                                                                          config.use_middle_indices_grid);
+                } else {
+                    video_pe_vec = build_video_rope_matrix(vx->ne[0],
+                                                           vx->ne[1],
+                                                           vx->ne[2],
+                                                           static_cast<int>(config.hidden_size),
+                                                           static_cast<int>(config.num_attention_heads),
+                                                           video_frame_rate,
+                                                           config.positional_embedding_theta,
+                                                           config.positional_embedding_max_pos,
+                                                           config.vae_scale_factors,
+                                                           config.causal_temporal_positioning,
+                                                           config.use_middle_indices_grid);
+                }
+                return sd::Tensor<float>({2, 2, config.attention_head_dim / 2, video_token_count * config.num_attention_heads}, std::move(video_pe_vec));
+            }));
 
             ggml_tensor* audio_pe       = nullptr;
             ggml_tensor* video_cross_pe = nullptr;
             ggml_tensor* audio_cross_pe = nullptr;
             if (ax != nullptr && ggml_nelements(ax) > 0 && ax->ne[1] > 0) {
-                audio_pe_vec = build_audio_rope_matrix(ax->ne[1],
-                                                       static_cast<int>(config.audio_hidden_size),
-                                                       static_cast<int>(config.audio_num_attention_heads),
-                                                       config.positional_embedding_theta,
-                                                       config.audio_positional_embedding_max_pos[0],
-                                                       config.use_middle_indices_grid);
-                audio_pe     = ggml_new_tensor_4d(compute_ctx, GGML_TYPE_F32, 2, 2, config.audio_attention_head_dim / 2, ax->ne[1] * config.audio_num_attention_heads);
-                ggml_set_name(audio_pe, "ltxav_audio_pe");
-                set_backend_tensor_data(audio_pe, audio_pe_vec.data());
+                sd::PECacheKey audio_pe_key("ltxav_audio_pe");
+                audio_pe_key.add(ax->ne[1]).add(config.audio_hidden_size).add(config.audio_num_attention_heads);
+                audio_pe_key.add(config.audio_attention_head_dim).add(config.positional_embedding_theta);
+                audio_pe_key.add(config.audio_positional_embedding_max_pos[0]).add(config.use_middle_indices_grid);
+                audio_pe = make_input(pe_cache_.get_or_create(audio_pe_key, [&]() {
+                    auto audio_pe_vec = build_audio_rope_matrix(ax->ne[1],
+                                                                static_cast<int>(config.audio_hidden_size),
+                                                                static_cast<int>(config.audio_num_attention_heads),
+                                                                config.positional_embedding_theta,
+                                                                config.audio_positional_embedding_max_pos[0],
+                                                                config.use_middle_indices_grid);
+                    return sd::Tensor<float>({2, 2, config.audio_attention_head_dim / 2, ax->ne[1] * config.audio_num_attention_heads}, std::move(audio_pe_vec));
+                }));
 
                 int temporal_max_pos = std::max(config.positional_embedding_max_pos[0], config.audio_positional_embedding_max_pos[0]);
-                if (has_video_positions) {
-                    video_cross_pe_vec = build_video_temporal_rope_matrix_from_positions(video_positions_tensor,
-                                                                                         static_cast<int>(config.audio_cross_attention_dim),
-                                                                                         static_cast<int>(config.audio_num_attention_heads),
-                                                                                         config.positional_embedding_theta,
-                                                                                         temporal_max_pos,
-                                                                                         true);
-                } else {
-                    video_cross_pe_vec = build_video_temporal_rope_matrix(vx->ne[0],
-                                                                          vx->ne[1],
-                                                                          vx->ne[2],
-                                                                          static_cast<int>(config.audio_cross_attention_dim),
-                                                                          static_cast<int>(config.audio_num_attention_heads),
-                                                                          video_frame_rate,
-                                                                          config.positional_embedding_theta,
-                                                                          temporal_max_pos,
-                                                                          std::get<0>(config.vae_scale_factors),
-                                                                          config.causal_temporal_positioning,
-                                                                          true);
-                }
-                video_cross_pe = ggml_new_tensor_4d(compute_ctx, GGML_TYPE_F32, 2, 2, config.audio_attention_head_dim / 2, video_token_count * config.audio_num_attention_heads);
-                ggml_set_name(video_cross_pe, "ltxav_video_cross_pe");
-                set_backend_tensor_data(video_cross_pe, video_cross_pe_vec.data());
+                sd::PECacheKey video_cross_pe_key("ltxav_video_cross_pe");
+                video_cross_pe_key.add_shape(vx).add(video_frame_rate).add(video_positions_tensor);
+                video_cross_pe_key.add(config.positional_embedding_theta).add(config.causal_temporal_positioning);
+                video_cross_pe_key.add(config.use_middle_indices_grid).add(config.audio_cross_attention_dim);
+                video_cross_pe_key.add(config.audio_num_attention_heads).add(config.audio_attention_head_dim);
+                video_cross_pe_key.add(temporal_max_pos).add(std::get<0>(config.vae_scale_factors));
+                video_cross_pe = make_input(pe_cache_.get_or_create(video_cross_pe_key, [&]() {
+                    std::vector<float> video_cross_pe_vec;
+                    if (has_video_positions) {
+                        video_cross_pe_vec = build_video_temporal_rope_matrix_from_positions(video_positions_tensor,
+                                                                                             static_cast<int>(config.audio_cross_attention_dim),
+                                                                                             static_cast<int>(config.audio_num_attention_heads),
+                                                                                             config.positional_embedding_theta,
+                                                                                             temporal_max_pos,
+                                                                                             true);
+                    } else {
+                        video_cross_pe_vec = build_video_temporal_rope_matrix(vx->ne[0],
+                                                                              vx->ne[1],
+                                                                              vx->ne[2],
+                                                                              static_cast<int>(config.audio_cross_attention_dim),
+                                                                              static_cast<int>(config.audio_num_attention_heads),
+                                                                              video_frame_rate,
+                                                                              config.positional_embedding_theta,
+                                                                              temporal_max_pos,
+                                                                              std::get<0>(config.vae_scale_factors),
+                                                                              config.causal_temporal_positioning,
+                                                                              true);
+                    }
+                    return sd::Tensor<float>({2, 2, config.audio_attention_head_dim / 2, video_token_count * config.audio_num_attention_heads}, std::move(video_cross_pe_vec));
+                }));
 
-                audio_cross_pe_vec = build_audio_rope_matrix(ax->ne[1],
-                                                             static_cast<int>(config.audio_cross_attention_dim),
-                                                             static_cast<int>(config.audio_num_attention_heads),
-                                                             config.positional_embedding_theta,
-                                                             temporal_max_pos,
-                                                             true);
-                audio_cross_pe     = ggml_new_tensor_4d(compute_ctx, GGML_TYPE_F32, 2, 2, config.audio_attention_head_dim / 2, ax->ne[1] * config.audio_num_attention_heads);
-                ggml_set_name(audio_cross_pe, "ltxav_audio_cross_pe");
-                set_backend_tensor_data(audio_cross_pe, audio_cross_pe_vec.data());
+                sd::PECacheKey audio_cross_pe_key("ltxav_audio_cross_pe");
+                audio_cross_pe_key.add(ax->ne[1]).add(config.audio_cross_attention_dim).add(config.audio_num_attention_heads);
+                audio_cross_pe_key.add(config.audio_attention_head_dim).add(config.positional_embedding_theta);
+                audio_cross_pe_key.add(temporal_max_pos);
+                audio_cross_pe = make_input(pe_cache_.get_or_create(audio_cross_pe_key, [&]() {
+                    auto audio_cross_pe_vec = build_audio_rope_matrix(ax->ne[1],
+                                                                      static_cast<int>(config.audio_cross_attention_dim),
+                                                                      static_cast<int>(config.audio_num_attention_heads),
+                                                                      config.positional_embedding_theta,
+                                                                      temporal_max_pos,
+                                                                      true);
+                    return sd::Tensor<float>({2, 2, config.audio_attention_head_dim / 2, ax->ne[1] * config.audio_num_attention_heads}, std::move(audio_cross_pe_vec));
+                }));
             }
 
             bool needs_video_connector_pe =
@@ -1879,10 +1959,13 @@ namespace LTXV {
                 int64_t target_len   = std::max<int64_t>(1024, seq_len);
                 int64_t duplications = (target_len + config.connector_num_registers - 1) / config.connector_num_registers;
                 int64_t full_len     = seq_len + duplications * config.connector_num_registers - seq_len;
-                connector_pe_vec     = build_1d_rope_matrix(full_len, static_cast<int>(config.connector_hidden_size), static_cast<int>(config.connector_num_heads), 10000.f, 4096.f, true);
-                video_connector_pe   = ggml_new_tensor_4d(compute_ctx, GGML_TYPE_F32, 2, 2, config.connector_head_dim / 2, full_len * config.connector_num_heads);
-                ggml_set_name(video_connector_pe, "ltxav_video_connector_pe");
-                set_backend_tensor_data(video_connector_pe, connector_pe_vec.data());
+                sd::PECacheKey video_connector_pe_key("ltxav_video_connector_pe");
+                video_connector_pe_key.add(full_len).add(config.connector_hidden_size).add(config.connector_num_heads);
+                video_connector_pe_key.add(config.connector_head_dim);
+                video_connector_pe = make_input(pe_cache_.get_or_create(video_connector_pe_key, [&]() {
+                    auto connector_pe_vec = build_1d_rope_matrix(full_len, static_cast<int>(config.connector_hidden_size), static_cast<int>(config.connector_num_heads), 10000.f, 4096.f, true);
+                    return sd::Tensor<float>({2, 2, config.connector_head_dim / 2, full_len * config.connector_num_heads}, std::move(connector_pe_vec));
+                }));
             }
 
             bool run_audio_context =
@@ -1899,14 +1982,17 @@ namespace LTXV {
                   context->ne[1] < 1024));
             ggml_tensor* audio_connector_pe = nullptr;
             if (needs_audio_connector_pe) {
-                int64_t seq_len        = context->ne[1];
-                int64_t target_len     = std::max<int64_t>(1024, seq_len);
-                int64_t duplications   = (target_len + config.audio_connector_num_registers - 1) / config.audio_connector_num_registers;
-                int64_t full_len       = seq_len + duplications * config.audio_connector_num_registers - seq_len;
-                audio_connector_pe_vec = build_1d_rope_matrix(full_len, static_cast<int>(config.audio_connector_hidden_size), static_cast<int>(config.audio_connector_num_heads), 10000.f, 4096.f, true);
-                audio_connector_pe     = ggml_new_tensor_4d(compute_ctx, GGML_TYPE_F32, 2, 2, config.audio_connector_head_dim / 2, full_len * config.audio_connector_num_heads);
-                ggml_set_name(audio_connector_pe, "ltxav_audio_connector_pe");
-                set_backend_tensor_data(audio_connector_pe, audio_connector_pe_vec.data());
+                int64_t seq_len      = context->ne[1];
+                int64_t target_len   = std::max<int64_t>(1024, seq_len);
+                int64_t duplications = (target_len + config.audio_connector_num_registers - 1) / config.audio_connector_num_registers;
+                int64_t full_len     = seq_len + duplications * config.audio_connector_num_registers - seq_len;
+                sd::PECacheKey audio_connector_pe_key("ltxav_audio_connector_pe");
+                audio_connector_pe_key.add(full_len).add(config.audio_connector_hidden_size).add(config.audio_connector_num_heads);
+                audio_connector_pe_key.add(config.audio_connector_head_dim);
+                audio_connector_pe = make_input(pe_cache_.get_or_create(audio_connector_pe_key, [&]() {
+                    auto audio_connector_pe_vec = build_1d_rope_matrix(full_len, static_cast<int>(config.audio_connector_hidden_size), static_cast<int>(config.audio_connector_num_heads), 10000.f, 4096.f, true);
+                    return sd::Tensor<float>({2, 2, config.audio_connector_head_dim / 2, full_len * config.audio_connector_num_heads}, std::move(audio_connector_pe_vec));
+                }));
             }
 
             auto runner_ctx = get_context();
@@ -1939,7 +2025,7 @@ namespace LTXV {
             auto get_graph = [&]() -> ggml_cgraph* {
                 return build_graph(x, timesteps, context, audio_x, audio_timesteps, audio_length, frame_rate, video_positions);
             };
-            auto out = restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false, false, false), x.dim());
+            auto out = restore_trailing_singleton_dims(GGMLRunner::compute(get_graph, n_threads, false), x.dim());
             return out;
         }
 
@@ -2011,7 +2097,7 @@ namespace LTXV {
 
             GGML_ASSERT(!out_opt.empty());
             print_sd_tensor(out_opt, false, "ltxav_out");
-            LOG_DEBUG("ltxav test done in %lldms", t1 - t0);
+            LOG_VERBOSE("ltxav test done in %lldms", t1 - t0);
         }
 
         static void load_from_file_and_test(const std::string& model_path,
@@ -2025,8 +2111,8 @@ namespace LTXV {
             ggml_backend_t backend = sd_backend_cpu_init();
             LOG_INFO("loading ltxav from '%s'", model_path.c_str());
 
-            auto model_manager        = std::make_shared<ModelManager>();
-            ModelLoader& model_loader = model_manager->loader();
+            auto model_manager = std::make_shared<ModelManager>();
+            ModelLoader model_loader;
             if (!model_loader.init_from_file_and_convert_name(model_path, "model.diffusion_model.")) {
                 LOG_ERROR("init model loader from file failed: '%s'", model_path.c_str());
                 return;
@@ -2045,7 +2131,8 @@ namespace LTXV {
                                                                                "model.diffusion_model",
                                                                                model_manager);
 
-            if (!model_manager->register_runner_params("LTXAV test",
+            if (!model_manager->set_loader(model_loader) ||
+                !model_manager->register_runner_params(ModelComponent::Diffusion,
                                                        *ltxav,
                                                        "model.diffusion_model",
                                                        ModelManager::ResidencyMode::ParamBackend,

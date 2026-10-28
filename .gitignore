@@ -2,6 +2,7 @@ build*/
 cmake-build-*/
 test/
 tests/
+logs/
 input/
 output/
 .vscode/
@@ -9,6 +10,10 @@ output/
 .cache/
 *.swp
 *.bat
+!/start-server.bat
+/start-server.local.sh
+/start-server.local.bat
+/start-server.local.ps1
 *.bin
 *.exe
 *.gguf

@@ -83,6 +83,8 @@ documentation.
   and debugging.
 * `examples/common/` - shared example support code.
 * `examples/server/` - server application built on top of the library.
+  Before modifying built-in recipes, read and follow
+  [the built-in recipe policy](examples/server/recipes/README.md).
 * `examples/server/frontend/` - git submodule containing independent frontend
   code. Avoid modifying it unless explicitly requested.
 
@@ -118,7 +120,8 @@ documentation.
 6. Run the narrowest useful build, test, or inspection command available.
 
 Follow `CONTRIBUTING.md` for formatting, naming, PR expectations, dependency
-update policy, and security rules.
+update policy, and security rules. For tokenizer additions, follow its embedded-data
+allowlist and default to an external `tokenizer.json`.
 
 ---
 

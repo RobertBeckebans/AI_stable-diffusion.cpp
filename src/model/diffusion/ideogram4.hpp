@@ -2,14 +2,19 @@
 #define __SD_MODEL_DIFFUSION_IDEOGRAM4_HPP__
 
 #include <algorithm>
+#include <cinttypes>
 #include <cmath>
 #include <cstdlib>
 #include <memory>
 #include <string>
 #include <vector>
+#include "core/pe_cache.h"
 
-#include "core/ggml_extend.hpp"
+#include "core/ggml_extend.h"
 #include "core/ggml_graph_cut.h"
+#include "core/ggml_runner.h"
+#include "core/util.h"
+#include "model/common/ggml_block.hpp"
 #include "model/common/rope.hpp"
 #include "model/diffusion/model.hpp"
 
@@ -58,11 +63,11 @@ namespace Ideogram4 {
             }
             if (detected_layers > 0) {
                 config.num_layers = detected_layers;
-                LOG_DEBUG("ideogram4: num_layers = %" PRId64 ", emb_dim = %" PRId64 ", num_heads = %" PRId64 ", intermediate_size = %" PRId64,
-                          config.num_layers,
-                          config.emb_dim,
-                          config.num_heads,
-                          config.intermediate_size);
+                LOG_VERBOSE("ideogram4: num_layers = %" PRId64 ", emb_dim = %" PRId64 ", num_heads = %" PRId64 ", intermediate_size = %" PRId64,
+                            config.num_layers,
+                            config.emb_dim,
+                            config.num_heads,
+                            config.intermediate_size);
             }
             return config;
         }
@@ -142,21 +147,24 @@ namespace Ideogram4 {
     __STATIC_INLINE__ std::shared_ptr<Linear> make_linear(int64_t in_features,
                                                           int64_t out_features,
                                                           bool bias = true) {
-        return std::make_shared<Linear>(in_features, out_features, bias, false, false, 1.f, true);
+        return std::make_shared<Linear>(in_features, out_features, bias);
     }
 
-    __STATIC_INLINE__ std::vector<float> gen_ideogram4_pe(int grid_h,
-                                                          int grid_w,
-                                                          int bs,
-                                                          int context_len,
-                                                          int head_dim,
-                                                          int rope_theta,
-                                                          const std::vector<int>& mrope_section,
-                                                          bool circular_x = false,
-                                                          bool circular_y = false) {
+    __STATIC_INLINE__ Rope::Embedding gen_ideogram4_pe(int grid_h,
+                                                       int grid_w,
+                                                       int bs,
+                                                       int context_len,
+                                                       int head_dim,
+                                                       int rope_theta,
+                                                       const std::vector<int>& mrope_section) {
         GGML_ASSERT(bs == 1);
-        std::vector<std::vector<float>> ids(static_cast<size_t>(bs) * (context_len + grid_h * grid_w),
-                                            std::vector<float>(3, 0.f));
+        Rope::Embedding result;
+        result.batch_size = bs;
+        result.positions.append_tokens(context_len);
+        result.positions.append_image(grid_h, grid_w);
+        result.ids.assign(static_cast<size_t>(bs) * (context_len + grid_h * grid_w),
+                          std::vector<float>(3, 0.f));
+        auto& ids = result.ids;
 
         for (int i = 0; i < context_len; ++i) {
             ids[i] = {static_cast<float>(i), static_cast<float>(i), static_cast<float>(i)};
@@ -171,29 +179,13 @@ namespace Ideogram4 {
             }
         }
 
-        std::vector<std::vector<int>> axis_wrap_dims(3);
-        if (circular_y || circular_x) {
-            size_t total_len = static_cast<size_t>(bs) * (context_len + grid_h * grid_w);
-            axis_wrap_dims[1].assign(total_len, 0);
-            axis_wrap_dims[2].assign(total_len, 0);
-            if (circular_y) {
-                for (size_t idx = static_cast<size_t>(context_len); idx < total_len; ++idx) {
-                    axis_wrap_dims[1][idx] = grid_h;
-                }
-            }
-            if (circular_x) {
-                for (size_t idx = static_cast<size_t>(context_len); idx < total_len; ++idx) {
-                    axis_wrap_dims[2][idx] = grid_w;
-                }
-            }
-        }
-
-        return Rope::embed_interleaved_mrope(ids,
-                                             bs,
-                                             static_cast<float>(rope_theta),
-                                             head_dim,
-                                             mrope_section,
-                                             axis_wrap_dims);
+        result.values = Rope::embed_interleaved_mrope(ids,
+                                                      bs,
+                                                      static_cast<float>(rope_theta),
+                                                      head_dim,
+                                                      mrope_section,
+                                                      &result.frequencies);
+        return result;
     }
 
     class Ideogram4Attention : public GGMLBlock {
@@ -431,6 +423,8 @@ namespace Ideogram4 {
     };
 
     class Ideogram4Runner : public DiffusionModelRunner {
+        sd::PECache pe_cache_;
+
     protected:
         bool should_use_uncond_model(const DiffusionParams& diffusion_params) const {
             return has_uncond_model &&
@@ -445,7 +439,6 @@ namespace Ideogram4 {
         Ideogram4Transformer uncond_model;
         bool has_uncond_model = false;
         std::string uncond_prefix;
-        std::vector<float> pe_vec;
         std::vector<int32_t> image_indicator_vec;
 
         Ideogram4Runner(ggml_backend_t backend,
@@ -465,7 +458,7 @@ namespace Ideogram4 {
                 }
             }
             if (has_uncond_model) {
-                LOG_DEBUG("using uncond model");
+                LOG_VERBOSE("using uncond model");
                 uncond_model = Ideogram4Transformer(config);
                 uncond_model.init(params_ctx, tensor_storage_map, uncond_prefix);
             }
@@ -505,17 +498,19 @@ namespace Ideogram4 {
             int64_t head_dim = config.emb_dim / config.num_heads;
 
             auto runner_ctx = get_context();
-            pe_vec          = gen_ideogram4_pe(static_cast<int>(grid_h),
-                                               static_cast<int>(grid_w),
-                                               static_cast<int>(x->ne[3]),
-                                               static_cast<int>(context_len),
-                                               static_cast<int>(head_dim),
-                                               static_cast<int>(config.rope_theta),
-                                               config.mrope_section,
-                                               runner_ctx.circular_x_enabled,
-                                               runner_ctx.circular_y_enabled);
-            auto pe         = ggml_new_tensor_4d(compute_ctx, GGML_TYPE_F32, 2, 2, head_dim / 2, pos_len);
-            set_backend_tensor_data(pe, pe_vec.data());
+            sd::PECacheKey pe_key("ideogram4.pe");
+            pe_key.add(grid_h).add(grid_w).add(x->ne[3]).add(context_len).add(head_dim).add(pos_len).add(config.rope_theta);
+            pe_key.add(config.mrope_section).add(circular_x_enabled).add(circular_y_enabled);
+            auto pe = make_input(pe_cache_.get_or_create(pe_key, [&]() {
+                auto pe_vec = finish_rope_pe(gen_ideogram4_pe(static_cast<int>(grid_h),
+                                                              static_cast<int>(grid_w),
+                                                              static_cast<int>(x->ne[3]),
+                                                              static_cast<int>(context_len),
+                                                              static_cast<int>(head_dim),
+                                                              static_cast<int>(config.rope_theta),
+                                                              config.mrope_section));
+                return sd::Tensor<float>({2, 2, head_dim / 2, pos_len}, std::move(pe_vec));
+            }));
 
             image_indicator_vec.assign(static_cast<size_t>(pos_len), 1);
             for (int64_t i = 0; i < context_len; ++i) {
@@ -537,7 +532,7 @@ namespace Ideogram4 {
             auto get_graph = [&]() -> ggml_cgraph* {
                 return build_graph(x, timesteps, context, use_uncond_model);
             };
-            return restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false, false, false), x.dim());
+            return restore_trailing_singleton_dims(GGMLRunner::compute(get_graph, n_threads, false), x.dim());
         }
 
         sd::Tensor<float> compute(int n_threads,
